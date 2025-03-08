@@ -90,6 +90,7 @@ include_directories(
     ${EIGEN3_INCLUDE_DIRS}
     ${PCL_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
+    ${nav2_costmap_2d_INCLUDE_DIRS}
 )
 
 add_library(${library_name} SHARED
@@ -109,6 +110,7 @@ target_link_libraries(${library_name}
   ${EIGEN3_LIBRARIES}
   ${PCL_LIBRARIES}
   OpenVDB::openvdb
+  ${nav2_costmap_2d_LIBRARIES}
 )
 
 ament_target_dependencies(${library_name} ${dependencies})
