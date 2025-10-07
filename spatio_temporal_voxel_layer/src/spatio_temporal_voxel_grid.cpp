@@ -35,12 +35,14 @@
  * Author: Steve Macenski (steven.macenski@simberobotics.com)
  *********************************************************************/
 
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <string>
 #include <vector>
 
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
+#include "openvdb/tree/Tree.h"
 
 namespace volume_grid
 {
@@ -415,6 +417,62 @@ void SpatioTemporalVoxelGrid::ResetGridArea(
       ClearGridPoint(pt_index);
     }
   }
+}
+
+/*****************************************************************************/
+bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
+/*****************************************************************************/
+{
+  boost::unique_lock<boost::mutex> lock(_grid_lock);
+
+  const auto bbox_min = bbox.min();
+  const auto bbox_max = bbox.max();
+
+  auto is_finite_vec = [](const openvdb::Vec3d & vec) {
+    return std::isfinite(vec.x()) && std::isfinite(vec.y()) && std::isfinite(vec.z());
+  };
+
+  if (!is_finite_vec(bbox_min) || !is_finite_vec(bbox_max)) {
+    return false;
+  }
+
+  if (bbox_min.x() > bbox_max.x() ||
+    bbox_min.y() > bbox_max.y() ||
+    bbox_min.z() > bbox_max.z())
+  {
+    return false;
+  }
+
+  if (this->IsGridEmpty()) {
+    _grid_points->clear();
+    _cost_map->clear();
+    return false;
+  }
+
+  const openvdb::Vec3d min_index = _grid->worldToIndex(bbox_min);
+  const openvdb::Vec3d max_index = _grid->worldToIndex(bbox_max);
+
+  openvdb::CoordBBox coord_bbox(
+    openvdb::Coord::floor(min_index),
+    openvdb::Coord::ceil(max_index));
+
+  const openvdb::Coord coord_min = coord_bbox.min();
+  const openvdb::Coord coord_max = coord_bbox.max();
+
+  if (coord_min.x() > coord_max.x() ||
+    coord_min.y() > coord_max.y() ||
+    coord_min.z() > coord_max.z())
+  {
+    return false;
+  }
+
+  _grid->tree().clip(coord_bbox);
+  _grid->pruneGrid();
+
+  _grid_points->clear();
+  _cost_map->clear();
+
+  return true;
 }
 
 /*****************************************************************************/

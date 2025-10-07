@@ -65,6 +65,7 @@
 // OpenVDB
 #include "openvdb/openvdb.h"
 #include "openvdb/tools/GridTransformer.h"
+#include "openvdb/math/BBox.h"
 #include "openvdb/tools/RayIntersector.h"
 
 // measurement struct and buffer
@@ -147,6 +148,7 @@ public:
   // Clear the grid
   bool ResetGrid(void);
   void ResetGridArea(const occupany_cell & start, const occupany_cell & end, bool invert_area=false);
+  bool ClipToBoundingBox(const openvdb::BBoxd & bbox);
 
   // Save the file to file with size information
   bool SaveGrid(const std::string & file_name, double & map_size_bytes);

@@ -148,6 +148,19 @@ rgbd_obstacle_layer:
     decay_acceleration: 1.       #default 0, 1/s^2. If laser scanner MUST be 0
     model_type: 0                #default 0 (depth camera). Use 1 for 3D Lidar
 ```
+
+Additional pruning controls are available to keep the OpenVDB grid bounded around the local costmap footprint:
+
+```
+  prune_enabled: false      #default false, enable OpenVDB clipping around the robot
+  prune_padding: 0.5        #meters of XYZ padding applied beyond the local window (XY only)
+  prune_distance: 0.0       #meters of costmap origin travel before forcing a clip (0 disables)
+  prune_interval: 0.5       #seconds between clip operations
+  prune_z_min: -1.0         #meters, lower bound of kept voxels (world frame)
+  prune_z_max: 2.0          #meters, upper bound of kept voxels (world frame)
+```
+
+When `prune_enabled` is true (and `mapping_mode` is false), STVL automatically clips the voxel grid to the rolling costmap extent plus `prune_padding` whenever either `prune_interval` seconds have elapsed or the costmap origin has shifted by at least `prune_distance`, preventing unbounded growth as the robot moves.
 More configuration samples are included in the example folder, including a 3D lidar one.
 
 ### local/global_costmap_params.yaml

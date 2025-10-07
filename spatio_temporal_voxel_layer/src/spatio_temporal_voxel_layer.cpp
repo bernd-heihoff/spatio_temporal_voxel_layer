@@ -37,12 +37,16 @@
  *                         stevenmacenski@gmail.com
  *********************************************************************/
 
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <memory>
 #include <vector>
+#include <limits>
+#include <algorithm>
 
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_layer.hpp"
+#include "openvdb/math/BBox.h"
 
 namespace spatio_temporal_voxel_layer
 {
@@ -54,6 +58,11 @@ using rcl_interfaces::msg::ParameterType;
 
 /*****************************************************************************/
 SpatioTemporalVoxelLayer::SpatioTemporalVoxelLayer(void)
+:
+  _prune_distance(0.0),
+  _prune_interval(0, 0),
+  _last_prune_origin_x(std::numeric_limits<double>::quiet_NaN()),
+  _last_prune_origin_y(std::numeric_limits<double>::quiet_NaN())
 /*****************************************************************************/
 {
 }
@@ -125,6 +134,42 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   // if mapping, how often to save a map for safety
   declareParameter("map_save_duration", rclcpp::ParameterValue(60.0));
   node->get_parameter(name_ + ".map_save_duration", map_save_time);
+
+  declareParameter("prune_enabled", rclcpp::ParameterValue(false));
+  node->get_parameter(name_ + ".prune_enabled", _prune_enabled);
+
+  declareParameter("prune_padding", rclcpp::ParameterValue(0.5));
+  node->get_parameter(name_ + ".prune_padding", _prune_padding);
+  _prune_padding = std::max(0.0, _prune_padding);
+
+  declareParameter("prune_distance", rclcpp::ParameterValue(0.0));
+  node->get_parameter(name_ + ".prune_distance", _prune_distance);
+  _prune_distance = std::max(0.0, _prune_distance);
+
+  double prune_interval_seconds = 0.5;
+  declareParameter("prune_interval", rclcpp::ParameterValue(prune_interval_seconds));
+  node->get_parameter(name_ + ".prune_interval", prune_interval_seconds);
+  if (prune_interval_seconds < 0.0) {
+    RCLCPP_WARN(
+      logger_, "%s prune_interval must be non-negative, clamping to 0.0", getName().c_str());
+    prune_interval_seconds = 0.0;
+  }
+  _prune_interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
+
+  declareParameter("prune_z_min", rclcpp::ParameterValue(-1.0e6));
+  declareParameter("prune_z_max", rclcpp::ParameterValue(1.0e6));
+  node->get_parameter(name_ + ".prune_z_min", _prune_z_min);
+  node->get_parameter(name_ + ".prune_z_max", _prune_z_max);
+  if (_prune_z_min > _prune_z_max) {
+    RCLCPP_WARN(
+      logger_, "%s prune_z_min > prune_z_max, swapping values.", getName().c_str());
+    std::swap(_prune_z_min, _prune_z_max);
+  }
+  if (_prune_z_min == _prune_z_max) {
+    _prune_z_min -= _voxel_size;
+    _prune_z_max += _voxel_size;
+  }
+
   RCLCPP_INFO(
     logger_,
     "%s loaded parameters from parameter server.", getName().c_str());
@@ -158,7 +203,12 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
     node->get_clock(), _voxel_size, static_cast<double>(default_value_), _decay_model,
     _voxel_decay, _publish_voxels);
 
+  _last_prune_time = node->now() - _prune_interval;
+
   matchSize();
+
+  _last_prune_origin_x = getOriginX();
+  _last_prune_origin_y = getOriginY();
 
   RCLCPP_INFO(logger_, "%s created underlying voxel grid.", getName().c_str());
 
@@ -698,6 +748,61 @@ void SpatioTemporalVoxelLayer::updateCosts(
 }
 
 /*****************************************************************************/
+void SpatioTemporalVoxelLayer::PruneVoxelGridIfNeeded(const rclcpp::Time & now)
+/*****************************************************************************/
+{
+  if (!_prune_enabled || _mapping_mode || !_voxel_grid) {
+    return;
+  }
+
+  const double origin_x = getOriginX();
+  const double origin_y = getOriginY();
+
+  const bool interval_elapsed = now >= _last_prune_time + _prune_interval;
+
+  bool moved_far_enough = false;
+  if (_prune_distance > 0.0) {
+    if (std::isfinite(_last_prune_origin_x) && std::isfinite(_last_prune_origin_y)) {
+      const double dx = origin_x - _last_prune_origin_x;
+      const double dy = origin_y - _last_prune_origin_y;
+      moved_far_enough = std::hypot(dx, dy) >= _prune_distance;
+    } else {
+      moved_far_enough = true;
+    }
+  }
+
+  if (!interval_elapsed && !moved_far_enough) {
+    return;
+  }
+
+  const double min_x = origin_x - _prune_padding;
+  const double max_x = origin_x + getSizeInMetersX() + _prune_padding;
+  const double min_y = origin_y - _prune_padding;
+  const double max_y = origin_y + getSizeInMetersY() + _prune_padding;
+
+  if (!(min_x < max_x && min_y < max_y && _prune_z_min < _prune_z_max)) {
+    _last_prune_time = now;
+    _last_prune_origin_x = origin_x;
+    _last_prune_origin_y = origin_y;
+    return;
+  }
+
+  const openvdb::BBoxd bbox(
+    openvdb::Vec3d(min_x, min_y, _prune_z_min),
+    openvdb::Vec3d(max_x, max_y, _prune_z_max));
+
+  if (_voxel_grid->ClipToBoundingBox(bbox)) {
+    _last_prune_time = now;
+    _last_prune_origin_x = origin_x;
+    _last_prune_origin_y = origin_y;
+  } else {
+    _last_prune_time = now;
+    _last_prune_origin_x = origin_x;
+    _last_prune_origin_y = origin_y;
+  }
+}
+
+/*****************************************************************************/
 void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   double * min_x, double * min_y, double * max_x, double * max_y,
   std::unordered_set<volume_grid::occupany_cell> & cleared_cells)
@@ -743,6 +848,12 @@ void SpatioTemporalVoxelLayer::updateBounds(
 
   boost::recursive_mutex::scoped_lock lock(_voxel_grid_lock);
 
+  auto node = node_.lock();
+  if (!node) {
+    RCLCPP_WARN(logger_, "%s could not lock lifecycle node for pruning", getName().c_str());
+    return;
+  }
+
   // Steve's Note June 22, 2018
   // I dislike this necessity, I can't remove the master grid's knowledge about
   // STVL on the fly so I have play games with the API even though this isn't
@@ -752,6 +863,8 @@ void SpatioTemporalVoxelLayer::updateBounds(
       robot_x - getSizeInMetersX() / 2,
       robot_y - getSizeInMetersY() / 2);
   }
+
+  PruneVoxelGridIfNeeded(node->now());
 
   useExtraBounds(min_x, min_y, max_x, max_y);
 
@@ -767,7 +880,6 @@ void SpatioTemporalVoxelLayer::updateBounds(
 
   // navigation mode: clear observations, mapping mode: save maps and publish
   bool should_save = false;
-  auto node = node_.lock();
   if (_map_save_duration) {
     should_save = node->now() - _last_map_save_time > *_map_save_duration;
   }
@@ -904,6 +1016,44 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           }
         }
       }
+
+      if (type == ParameterType::PARAMETER_DOUBLE) {
+        if (name == name_ + "." + "prune_padding") {
+          _prune_padding = std::max(0.0, parameter.as_double());
+        } else if (name == name_ + "." + "prune_distance") {
+          _prune_distance = std::max(0.0, parameter.as_double());
+          _last_prune_origin_x = getOriginX();
+          _last_prune_origin_y = getOriginY();
+        } else if (name == name_ + "." + "prune_interval") {
+          double prune_interval_seconds = parameter.as_double();
+          if (prune_interval_seconds < 0.0) {
+            prune_interval_seconds = 0.0;
+          }
+          _prune_interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
+          auto node = node_.lock();
+          if (node) {
+            _last_prune_time = node->now() - _prune_interval;
+          }
+        } else if (name == name_ + "." + "prune_z_min") {
+          _prune_z_min = parameter.as_double();
+          if (_prune_z_min > _prune_z_max) {
+            std::swap(_prune_z_min, _prune_z_max);
+          }
+          if (_prune_z_min == _prune_z_max) {
+            _prune_z_min -= _voxel_size;
+            _prune_z_max += _voxel_size;
+          }
+        } else if (name == name_ + "." + "prune_z_max") {
+          _prune_z_max = parameter.as_double();
+          if (_prune_z_min > _prune_z_max) {
+            std::swap(_prune_z_min, _prune_z_max);
+          }
+          if (_prune_z_min == _prune_z_max) {
+            _prune_z_min -= _voxel_size;
+            _prune_z_max += _voxel_size;
+          }
+        }
+      }
     }
 
     if (type == ParameterType::PARAMETER_BOOL) {
@@ -934,6 +1084,12 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           }
         }
         enabled_ = enable;
+      } else if (name == name_ + "." + "prune_enabled") {
+        _prune_enabled = parameter.as_bool();
+        auto node = node_.lock();
+        if (node) {
+          _last_prune_time = node->now() - _prune_interval;
+        }
       }
     }
 
