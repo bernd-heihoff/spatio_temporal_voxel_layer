@@ -40,6 +40,7 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
 #include "openvdb/tree/Tree.h"
@@ -55,7 +56,7 @@ SpatioTemporalVoxelGrid::SpatioTemporalVoxelGrid(
 : _clock(clock), _decay_model(decay_model), _background_value(background_value),
   _voxel_size(voxel_size), _voxel_decay(voxel_decay), _pub_voxels(pub_voxels),
   _grid_points(std::make_unique<std::vector<geometry_msgs::msg::Point32>>()),
-  _cost_map(new std::unordered_map<occupany_cell, uint>)
+  _cell_statistics()
 /*****************************************************************************/
 {
   this->InitializeGrid();
@@ -66,9 +67,6 @@ SpatioTemporalVoxelGrid::~SpatioTemporalVoxelGrid(void)
 /*****************************************************************************/
 {
   // pcl pointclouds free themselves
-  if (_cost_map) {
-    delete _cost_map;
-  }
 }
 
 /*****************************************************************************/
@@ -97,7 +95,7 @@ void SpatioTemporalVoxelGrid::InitializeGrid(void)
 /*****************************************************************************/
 void SpatioTemporalVoxelGrid::ClearFrustums(
   const std::vector<observation::MeasurementReading> & clearing_readings,
-  std::unordered_set<occupany_cell> & cleared_cells)
+  OccupanyCellSet & cleared_cells)
 /*****************************************************************************/
 {
   boost::unique_lock<boost::mutex> lock(_grid_lock);
@@ -105,12 +103,12 @@ void SpatioTemporalVoxelGrid::ClearFrustums(
   // accelerate the decay of voxels interior to the frustum
   if (this->IsGridEmpty()) {
     _grid_points->clear();
-    _cost_map->clear();
+    _cell_statistics.clear();
     return;
   }
 
   _grid_points->clear();
-  _cost_map->clear();
+  _cell_statistics.clear();
 
   std::vector<frustum_model> obs_frustums;
 
@@ -150,7 +148,7 @@ void SpatioTemporalVoxelGrid::ClearFrustums(
 /*****************************************************************************/
 void SpatioTemporalVoxelGrid::TemporalClearAndGenerateCostmap(
   std::vector<frustum_model> & frustums,
-  std::unordered_set<occupany_cell> & cleared_cells)
+  OccupanyCellSet & cleared_cells)
 /*****************************************************************************/
 {
   // sample time once for all clearing readings
@@ -241,14 +239,23 @@ void SpatioTemporalVoxelGrid::PopulateCostmapAndPointcloud(
     _grid_points->push_back(point);
   }
 
-  std::unordered_map<occupany_cell, uint>::iterator cell;
-  cell = _cost_map->find(occupany_cell(pose_world[0], pose_world[1]));
-  if (cell != _cost_map->end()) {
-    cell->second += 1;
+  const occupany_cell key(pose_world[0], pose_world[1]);
+  auto iter = _cell_statistics.find(key);
+  if (iter == _cell_statistics.end()) {
+    CellStatistics stats;
+    stats.reset();
+    stats.point_count = 1U;
+    stats.min_z = pose_world[2];
+    stats.max_z = pose_world[2];
+    stats.sum_z = pose_world[2];
+    stats.sum_sq_z = pose_world[2] * pose_world[2];
+    _cell_statistics.emplace(key, stats);
   } else {
-    _cost_map->insert(
-      std::make_pair(
-        occupany_cell(pose_world[0], pose_world[1]), 1));
+    iter->second.point_count += 1U;
+    iter->second.min_z = std::min(iter->second.min_z, pose_world[2]);
+    iter->second.max_z = std::max(iter->second.max_z, pose_world[2]);
+    iter->second.sum_z += pose_world[2];
+    iter->second.sum_sq_z += pose_world[2] * pose_world[2];
   }
 }
 
@@ -311,11 +318,11 @@ void SpatioTemporalVoxelGrid::operator()(
 }
 
 /*****************************************************************************/
-std::unordered_map<occupany_cell, uint> *
-SpatioTemporalVoxelGrid::GetFlattenedCostmap()
+OccupanyCellStatisticsMap *
+SpatioTemporalVoxelGrid::GetCellStatistics()
 /*****************************************************************************/
 {
-  return _cost_map;
+  return &_cell_statistics;
 }
 
 /*****************************************************************************/
@@ -445,7 +452,7 @@ bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
 
   if (this->IsGridEmpty()) {
     _grid_points->clear();
-    _cost_map->clear();
+    _cell_statistics.clear();
     return false;
   }
 
@@ -470,7 +477,7 @@ bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
   _grid->pruneGrid();
 
   _grid_points->clear();
-  _cost_map->clear();
+  _cell_statistics.clear();
 
   return true;
 }

@@ -805,26 +805,26 @@ void SpatioTemporalVoxelLayer::PruneVoxelGridIfNeeded(const rclcpp::Time & now)
 /*****************************************************************************/
 void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   double * min_x, double * min_y, double * max_x, double * max_y,
-  std::unordered_set<volume_grid::occupany_cell> & cleared_cells)
+  volume_grid::OccupanyCellSet & cleared_cells)
 /*****************************************************************************/
 {
   // grabs map of occupied cells from grid and adds to costmap_
   Costmap2D::resetMaps();
 
-  std::unordered_map<volume_grid::occupany_cell, uint>::iterator it;
-  for (it = _voxel_grid->GetFlattenedCostmap()->begin();
-    it != _voxel_grid->GetFlattenedCostmap()->end(); ++it)
-  {
+  auto * cell_stats = _voxel_grid->GetCellStatistics();
+  for (const auto & entry : *cell_stats) {
+    const auto & stats = entry.second;
+    if (_mark_threshold > 0 && static_cast<int>(stats.point_count) < _mark_threshold) {
+      continue;
+    }
+
     uint map_x, map_y;
-    if (static_cast<int>(it->second) >= _mark_threshold &&
-      worldToMap(it->first.x, it->first.y, map_x, map_y))
-    {
-      costmap_[getIndex(map_x, map_y)] = nav2_costmap_2d::LETHAL_OBSTACLE;
-      touch(it->first.x, it->first.y, min_x, min_y, max_x, max_y);
+    if (worldToMap(entry.first.x, entry.first.y, map_x, map_y)) {
+      touch(entry.first.x, entry.first.y, min_x, min_y, max_x, max_y);
     }
   }
 
-  std::unordered_set<volume_grid::occupany_cell>::iterator cell;
+  volume_grid::OccupanyCellSet::iterator cell;
   for (cell = cleared_cells.begin(); cell != cleared_cells.end(); ++cell)
   {
     touch(cell->x, cell->y, min_x, min_y, max_x, max_y);
@@ -876,7 +876,7 @@ void SpatioTemporalVoxelLayer::updateBounds(
   ObservationsResetAfterReading();
   current_ = current;
 
-  std::unordered_set<volume_grid::occupany_cell> cleared_cells;
+  volume_grid::OccupanyCellSet cleared_cells;
 
   // navigation mode: clear observations, mapping mode: save maps and publish
   bool should_save = false;

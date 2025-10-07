@@ -50,6 +50,8 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <limits>
+#include <cstdint>
 // PCL
 #include "pcl/common/transforms.h"
 #include "pcl/PCLPointCloud2.h"
@@ -102,6 +104,40 @@ struct occupany_cell
   double x, y;
 };
 
+struct CellStatistics
+{
+  void reset()
+  {
+    point_count = 0U;
+    min_z = std::numeric_limits<double>::infinity();
+    max_z = -std::numeric_limits<double>::infinity();
+    sum_z = 0.0;
+    sum_sq_z = 0.0;
+  }
+
+  bool empty() const
+  {
+    return point_count == 0U;
+  }
+
+  uint32_t point_count{0U};
+  double min_z{std::numeric_limits<double>::infinity()};
+  double max_z{-std::numeric_limits<double>::infinity()};
+  double sum_z{0.0};
+  double sum_sq_z{0.0};
+};
+
+struct OccupanyCellHash
+{
+  std::size_t operator()(const occupany_cell & cell) const noexcept
+  {
+    return (std::hash<double>()(cell.x) ^ (std::hash<double>()(cell.y) << 1)) >> 1;
+  }
+};
+
+using OccupanyCellStatisticsMap = std::unordered_map<occupany_cell, CellStatistics, OccupanyCellHash>;
+using OccupanyCellSet = std::unordered_set<occupany_cell, OccupanyCellHash>;
+
 // Structure for wrapping frustum model and necessary metadata
 struct frustum_model
 {
@@ -139,11 +175,11 @@ public:
   void operator()(const observation::MeasurementReading & obs) const;
   void ClearFrustums(
     const std::vector<observation::MeasurementReading> & clearing_observations,
-    std::unordered_set<occupany_cell> & cleared_cells);
+    OccupanyCellSet & cleared_cells);
 
   // Get the pointcloud of the underlying occupancy grid
   void GetOccupancyPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
-  std::unordered_map<occupany_cell, uint> * GetFlattenedCostmap();
+  OccupanyCellStatisticsMap * GetCellStatistics();
 
   // Clear the grid
   bool ResetGrid(void);
@@ -170,7 +206,7 @@ protected:
     const double & time_delta, const double & acceleration_factor);
   void TemporalClearAndGenerateCostmap(
     std::vector<frustum_model> & frustums,
-    std::unordered_set<occupany_cell> & cleared_cells);
+    OccupanyCellSet & cleared_cells);
 
   // Populate the costmap ROS api and pointcloud with a marked point
   void PopulateCostmapAndPointcloud(const openvdb::Coord & pt);
@@ -186,24 +222,10 @@ protected:
   double _background_value, _voxel_size, _voxel_decay;
   bool _pub_voxels;
   std::unique_ptr<std::vector<geometry_msgs::msg::Point32>> _grid_points;
-  std::unordered_map<occupany_cell, uint> * _cost_map;
+  OccupanyCellStatisticsMap _cell_statistics;
   boost::mutex _grid_lock;
 };
 
 }  // namespace volume_grid
-
-// hash function for unordered_map of occupancy_cells
-namespace std
-{
-template<>
-struct hash<volume_grid::occupany_cell>
-{
-  std::size_t operator()(const volume_grid::occupany_cell & k) const
-  {
-    return (std::hash<double>()(k.x) ^ (std::hash<double>()(k.y) << 1)) >> 1;
-  }
-};
-
-}  // namespace std
 
 #endif  // SPATIO_TEMPORAL_VOXEL_LAYER__SPATIO_TEMPORAL_VOXEL_GRID_HPP_

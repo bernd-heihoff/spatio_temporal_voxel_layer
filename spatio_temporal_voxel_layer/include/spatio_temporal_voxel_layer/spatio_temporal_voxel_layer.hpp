@@ -122,7 +122,7 @@ public:
   // Functions to interact with maps
   void UpdateROSCostmap(
     double * min_x, double * min_y, double * max_x, double * max_y,
-    std::unordered_set<volume_grid::occupany_cell> & cleared_cells);
+    volume_grid::OccupanyCellSet & cleared_cells);
   bool updateFootprint(
     double robot_x, double robot_y, double robot_yaw,
     double * min_x, double * min_y, double * max_x, double * max_y);
