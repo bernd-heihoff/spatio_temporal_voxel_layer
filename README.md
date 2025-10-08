@@ -118,6 +118,7 @@ rgbd_obstacle_layer:
   obstacle_range:        3.0    #meters
   origin_z:              0.0    #meters
   publish_voxel_map:     true   # default off
+  publish_elevation_map: true   # default off, publishes ground elevation as XYZ point cloud
   transform_tolerance:   0.2    # seconds
   mapping_mode:          false  # default off, saves map not for navigation
   map_save_duration:     60     #default 60s, how often to autosave

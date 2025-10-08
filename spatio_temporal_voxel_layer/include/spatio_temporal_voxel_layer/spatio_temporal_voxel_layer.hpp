@@ -50,6 +50,7 @@
 #include <iostream>
 #include <memory>
 #include <unordered_set>
+#include <limits>
 // voxel grid
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
 // ROS
@@ -111,6 +112,11 @@ public:
   virtual void clearArea(int start_x, int start_y, int end_x, int end_y, bool invert_area=false) override;
 
   virtual bool isClearable() {return true;}
+
+  const std::vector<int32_t> & getElevationLayer() const {return _elevation_layer;}
+  int32_t getNoElevationDataValue() const {return _no_elevation_data;}
+  const std::vector<float> & getElevationLayerMeters() const {return _elevation_layer_m;}
+  float getNoElevationMetersValue() const {return _no_elevation_data_m;}
 
   // Functions for sensor feeds
   bool GetMarkingObservations(std::vector<observation::MeasurementReading> & marking_observations)
@@ -175,8 +181,9 @@ private:
   std::vector<std::shared_ptr<buffer::MeasurementBuffer>> _clearing_buffers;
   std::vector<rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr> _buffer_enabler_servers;
 
-  bool _publish_voxels, _mapping_mode, was_reset_;
+  bool _publish_voxels, _publish_elevation_map, _mapping_mode, was_reset_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _voxel_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _elevation_pub;
   rclcpp::Service<spatio_temporal_voxel_layer::srv::SaveGrid>::SharedPtr _grid_saver;
   std::unique_ptr<rclcpp::Duration> _map_save_duration;
   rclcpp::Time _last_map_save_time;
@@ -194,6 +201,11 @@ private:
   std::vector<observation::MeasurementReading> _static_observations;
   std::unique_ptr<volume_grid::SpatioTemporalVoxelGrid> _voxel_grid;
   boost::recursive_mutex _voxel_grid_lock;
+
+  std::vector<int32_t> _elevation_layer;
+  int32_t _no_elevation_data{std::numeric_limits<int32_t>::min()};
+  std::vector<float> _elevation_layer_m;
+  float _no_elevation_data_m{std::numeric_limits<float>::quiet_NaN()};
 
   std::string _topics_string;
 

@@ -104,27 +104,36 @@ struct occupany_cell
   double x, y;
 };
 
-struct CellStatistics
+struct ColumnElevation
 {
+  static constexpr int32_t NO_DATA = std::numeric_limits<int32_t>::min();
+
   void reset()
   {
+    elevation_index = NO_DATA;
     point_count = 0U;
-    min_z = std::numeric_limits<double>::infinity();
-    max_z = -std::numeric_limits<double>::infinity();
-    sum_z = 0.0;
-    sum_sq_z = 0.0;
+    elevation_m = std::numeric_limits<double>::quiet_NaN();
   }
 
   bool empty() const
   {
-    return point_count == 0U;
+    return elevation_index == NO_DATA;
   }
 
+  void updateWithMeasurement(int32_t new_index, double world_z)
+  {
+    if (empty() || new_index < elevation_index ||
+      (new_index == elevation_index && world_z < elevation_m))
+    {
+      elevation_index = new_index;
+      elevation_m = world_z;
+    }
+    ++point_count;
+  }
+
+  int32_t elevation_index{NO_DATA};
   uint32_t point_count{0U};
-  double min_z{std::numeric_limits<double>::infinity()};
-  double max_z{-std::numeric_limits<double>::infinity()};
-  double sum_z{0.0};
-  double sum_sq_z{0.0};
+  double elevation_m{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct OccupanyCellHash
@@ -135,7 +144,7 @@ struct OccupanyCellHash
   }
 };
 
-using OccupanyCellStatisticsMap = std::unordered_map<occupany_cell, CellStatistics, OccupanyCellHash>;
+using ColumnElevationMap = std::unordered_map<occupany_cell, ColumnElevation, OccupanyCellHash>;
 using OccupanyCellSet = std::unordered_set<occupany_cell, OccupanyCellHash>;
 
 // Structure for wrapping frustum model and necessary metadata
@@ -179,7 +188,8 @@ public:
 
   // Get the pointcloud of the underlying occupancy grid
   void GetOccupancyPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
-  OccupanyCellStatisticsMap * GetCellStatistics();
+  void GetElevationPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
+  ColumnElevationMap * GetColumnElevationMap();
 
   // Clear the grid
   bool ResetGrid(void);
@@ -222,7 +232,7 @@ protected:
   double _background_value, _voxel_size, _voxel_decay;
   bool _pub_voxels;
   std::unique_ptr<std::vector<geometry_msgs::msg::Point32>> _grid_points;
-  OccupanyCellStatisticsMap _cell_statistics;
+  ColumnElevationMap _column_elevations;
   boost::mutex _grid_lock;
 };
 

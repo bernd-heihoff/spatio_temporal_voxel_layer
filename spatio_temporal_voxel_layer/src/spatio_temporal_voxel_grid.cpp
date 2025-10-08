@@ -56,7 +56,7 @@ SpatioTemporalVoxelGrid::SpatioTemporalVoxelGrid(
 : _clock(clock), _decay_model(decay_model), _background_value(background_value),
   _voxel_size(voxel_size), _voxel_decay(voxel_decay), _pub_voxels(pub_voxels),
   _grid_points(std::make_unique<std::vector<geometry_msgs::msg::Point32>>()),
-  _cell_statistics()
+  _column_elevations()
 /*****************************************************************************/
 {
   this->InitializeGrid();
@@ -103,12 +103,12 @@ void SpatioTemporalVoxelGrid::ClearFrustums(
   // accelerate the decay of voxels interior to the frustum
   if (this->IsGridEmpty()) {
     _grid_points->clear();
-    _cell_statistics.clear();
+    _column_elevations.clear();
     return;
   }
 
   _grid_points->clear();
-  _cell_statistics.clear();
+  _column_elevations.clear();
 
   std::vector<frustum_model> obs_frustums;
 
@@ -240,22 +240,15 @@ void SpatioTemporalVoxelGrid::PopulateCostmapAndPointcloud(
   }
 
   const occupany_cell key(pose_world[0], pose_world[1]);
-  auto iter = _cell_statistics.find(key);
-  if (iter == _cell_statistics.end()) {
-    CellStatistics stats;
-    stats.reset();
-    stats.point_count = 1U;
-    stats.min_z = pose_world[2];
-    stats.max_z = pose_world[2];
-    stats.sum_z = pose_world[2];
-    stats.sum_sq_z = pose_world[2] * pose_world[2];
-    _cell_statistics.emplace(key, stats);
+  const int32_t elevation_index = pt.z();
+  auto iter = _column_elevations.find(key);
+  if (iter == _column_elevations.end()) {
+    ColumnElevation column;
+    column.reset();
+    column.updateWithMeasurement(elevation_index, pose_world[2]);
+    _column_elevations.emplace(key, column);
   } else {
-    iter->second.point_count += 1U;
-    iter->second.min_z = std::min(iter->second.min_z, pose_world[2]);
-    iter->second.max_z = std::max(iter->second.max_z, pose_world[2]);
-    iter->second.sum_z += pose_world[2];
-    iter->second.sum_sq_z += pose_world[2] * pose_world[2];
+    iter->second.updateWithMeasurement(elevation_index, pose_world[2]);
   }
 }
 
@@ -318,11 +311,11 @@ void SpatioTemporalVoxelGrid::operator()(
 }
 
 /*****************************************************************************/
-OccupanyCellStatisticsMap *
-SpatioTemporalVoxelGrid::GetCellStatistics()
+ColumnElevationMap *
+SpatioTemporalVoxelGrid::GetColumnElevationMap()
 /*****************************************************************************/
 {
-  return &_cell_statistics;
+  return &_column_elevations;
 }
 
 /*****************************************************************************/
@@ -381,6 +374,44 @@ void SpatioTemporalVoxelGrid::GetOccupancyPointCloud(
     *iter_y = pt.y;
     *iter_z = pt.z;
     ++iter_x; ++iter_y; ++iter_z;
+  }
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelGrid::GetElevationPointCloud(
+  std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2)
+/*****************************************************************************/
+{
+  size_t populated_columns = 0U;
+  for (const auto & entry : _column_elevations) {
+    if (!entry.second.empty()) {
+      ++populated_columns;
+    }
+  }
+
+  pc2->width = populated_columns;
+  pc2->height = 1;
+  pc2->is_dense = true;
+
+  sensor_msgs::PointCloud2Modifier modifier(*pc2);
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+  modifier.resize(populated_columns);
+
+  sensor_msgs::PointCloud2Iterator<float> iter_x(*pc2, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(*pc2, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(*pc2, "z");
+
+  for (const auto & entry : _column_elevations) {
+    if (entry.second.empty()) {
+      continue;
+    }
+
+    *iter_x = static_cast<float>(entry.first.x);
+    *iter_y = static_cast<float>(entry.first.y);
+    *iter_z = static_cast<float>(entry.second.elevation_m);
+    ++iter_x;
+    ++iter_y;
+    ++iter_z;
   }
 }
 
@@ -452,7 +483,7 @@ bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
 
   if (this->IsGridEmpty()) {
     _grid_points->clear();
-    _cell_statistics.clear();
+    _column_elevations.clear();
     return false;
   }
 
@@ -477,7 +508,7 @@ bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
   _grid->pruneGrid();
 
   _grid_points->clear();
-  _cell_statistics.clear();
+  _column_elevations.clear();
 
   return true;
 }

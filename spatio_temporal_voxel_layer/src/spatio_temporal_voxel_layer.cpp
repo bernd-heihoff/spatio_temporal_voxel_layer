@@ -105,6 +105,8 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   // publish the voxel grid to visualize
   declareParameter("publish_voxel_map", rclcpp::ParameterValue(false));
   node->get_parameter(name_ + ".publish_voxel_map", _publish_voxels);
+  declareParameter("publish_elevation_map", rclcpp::ParameterValue(false));
+  node->get_parameter(name_ + ".publish_elevation_map", _publish_elevation_map);
   // size of each voxel in meters
   declareParameter("voxel_size", rclcpp::ParameterValue(0.05));
   node->get_parameter(name_ + ".voxel_size", _voxel_size);
@@ -193,6 +195,8 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
 
   _voxel_pub = node->create_publisher<sensor_msgs::msg::PointCloud2>(
     "voxel_grid", rclcpp::QoS(1), pub_opt);
+  _elevation_pub = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "elevation_map", rclcpp::QoS(1), pub_opt);
 
   auto save_grid_callback = std::bind(
     &SpatioTemporalVoxelLayer::SaveGridCallback, this, _1, _2, _3);
@@ -712,6 +716,9 @@ void SpatioTemporalVoxelLayer::matchSize(void)
 {
   // match the master costmap size, volume_grid maintains full w/ expiration.
   CostmapLayer::matchSize();
+  const size_t cell_count = static_cast<size_t>(getSizeInCellsX()) * static_cast<size_t>(getSizeInCellsY());
+  _elevation_layer.assign(cell_count, _no_elevation_data);
+  _elevation_layer_m.assign(cell_count, _no_elevation_data_m);
 }
 
 /*****************************************************************************/
@@ -811,15 +818,32 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   // grabs map of occupied cells from grid and adds to costmap_
   Costmap2D::resetMaps();
 
-  auto * cell_stats = _voxel_grid->GetCellStatistics();
-  for (const auto & entry : *cell_stats) {
-    const auto & stats = entry.second;
-    if (_mark_threshold > 0 && static_cast<int>(stats.point_count) < _mark_threshold) {
+  if (_elevation_layer.size() !=
+    static_cast<size_t>(getSizeInCellsX()) * static_cast<size_t>(getSizeInCellsY()))
+  {
+    matchSize();
+  }
+
+  std::fill(_elevation_layer.begin(), _elevation_layer.end(), _no_elevation_data);
+  std::fill(_elevation_layer_m.begin(), _elevation_layer_m.end(), _no_elevation_data_m);
+
+  auto * column_map = _voxel_grid->GetColumnElevationMap();
+  for (const auto & entry : *column_map) {
+    const auto & column = entry.second;
+    if (column.empty()) {
+      continue;
+    }
+    if (_mark_threshold > 0 && static_cast<int>(column.point_count) < _mark_threshold) {
       continue;
     }
 
     uint map_x, map_y;
     if (worldToMap(entry.first.x, entry.first.y, map_x, map_y)) {
+      const size_t index = getIndex(map_x, map_y);
+      if (index < _elevation_layer.size()) {
+        _elevation_layer[index] = column.elevation_index;
+        _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
+      }
       touch(entry.first.x, entry.first.y, min_x, min_y, max_x, max_y);
     }
   }
@@ -916,6 +940,15 @@ void SpatioTemporalVoxelLayer::updateBounds(
     pc2->header.frame_id = _global_frame;
     pc2->header.stamp = node->now();
     _voxel_pub->publish(*pc2);
+  }
+
+  if (_publish_elevation_map && !_mapping_mode && _elevation_pub) {
+    std::unique_ptr<sensor_msgs::msg::PointCloud2> elevation_pc2 =
+      std::make_unique<sensor_msgs::msg::PointCloud2>();
+    _voxel_grid->GetElevationPointCloud(elevation_pc2);
+    elevation_pc2->header.frame_id = _global_frame;
+    elevation_pc2->header.stamp = node->now();
+    _elevation_pub->publish(*elevation_pc2);
   }
 
   // update footprint
@@ -1090,6 +1123,10 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
         if (node) {
           _last_prune_time = node->now() - _prune_interval;
         }
+      } else if (name == name_ + "." + "publish_voxel_map") {
+        _publish_voxels = parameter.as_bool();
+      } else if (name == name_ + "." + "publish_elevation_map") {
+        _publish_elevation_map = parameter.as_bool();
       }
     }
 
