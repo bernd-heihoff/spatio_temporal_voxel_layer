@@ -190,6 +190,7 @@ public:
   void GetOccupancyPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
   void GetElevationPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
   ColumnElevationMap * GetColumnElevationMap();
+  OccupanyCellSet * GetTouchedColumns();
 
   // Clear the grid
   bool ResetGrid(void);
@@ -233,6 +234,7 @@ protected:
   bool _pub_voxels;
   std::unique_ptr<std::vector<geometry_msgs::msg::Point32>> _grid_points;
   ColumnElevationMap _column_elevations;
+  OccupanyCellSet _touched_columns;
   boost::mutex _grid_lock;
 };
 

@@ -104,11 +104,13 @@ void SpatioTemporalVoxelGrid::ClearFrustums(
   if (this->IsGridEmpty()) {
     _grid_points->clear();
     _column_elevations.clear();
+    _touched_columns.clear();
     return;
   }
 
   _grid_points->clear();
   _column_elevations.clear();
+  _touched_columns.clear();
 
   std::vector<frustum_model> obs_frustums;
 
@@ -242,6 +244,7 @@ void SpatioTemporalVoxelGrid::PopulateCostmapAndPointcloud(
   const occupany_cell key(pose_world[0], pose_world[1]);
   const int32_t elevation_index = pt.z();
   auto iter = _column_elevations.find(key);
+  _touched_columns.insert(key);
   if (iter == _column_elevations.end()) {
     ColumnElevation column;
     column.reset();
@@ -316,6 +319,14 @@ SpatioTemporalVoxelGrid::GetColumnElevationMap()
 /*****************************************************************************/
 {
   return &_column_elevations;
+}
+
+/*****************************************************************************/
+OccupanyCellSet *
+SpatioTemporalVoxelGrid::GetTouchedColumns()
+/*****************************************************************************/
+{
+  return &_touched_columns;
 }
 
 /*****************************************************************************/
@@ -424,6 +435,9 @@ bool SpatioTemporalVoxelGrid::ResetGrid(void)
   // clear the voxel grid
   try {
     _grid->clear();
+    _grid_points->clear();
+    _column_elevations.clear();
+    _touched_columns.clear();
     if (this->IsGridEmpty()) {
       return true;
     }
@@ -484,6 +498,7 @@ bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
   if (this->IsGridEmpty()) {
     _grid_points->clear();
     _column_elevations.clear();
+    _touched_columns.clear();
     return false;
   }
 
@@ -509,6 +524,7 @@ bool SpatioTemporalVoxelGrid::ClipToBoundingBox(const openvdb::BBoxd & bbox)
 
   _grid_points->clear();
   _column_elevations.clear();
+  _touched_columns.clear();
 
   return true;
 }

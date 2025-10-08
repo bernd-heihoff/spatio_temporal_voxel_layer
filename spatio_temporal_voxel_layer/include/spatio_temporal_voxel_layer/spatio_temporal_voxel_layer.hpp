@@ -206,6 +206,7 @@ private:
   int32_t _no_elevation_data{std::numeric_limits<int32_t>::min()};
   std::vector<float> _elevation_layer_m;
   float _no_elevation_data_m{std::numeric_limits<float>::quiet_NaN()};
+  std::vector<size_t> _active_elevation_indices;
 
   std::string _topics_string;
 

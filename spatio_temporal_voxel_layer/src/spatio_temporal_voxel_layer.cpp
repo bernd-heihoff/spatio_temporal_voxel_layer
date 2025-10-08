@@ -708,6 +708,9 @@ void SpatioTemporalVoxelLayer::ResetGrid(void)
   if (!_voxel_grid->ResetGrid()) {
     RCLCPP_WARN(logger_, "Did not clear level set in %s!", getName().c_str());
   }
+  std::fill(_elevation_layer.begin(), _elevation_layer.end(), _no_elevation_data);
+  std::fill(_elevation_layer_m.begin(), _elevation_layer_m.end(), _no_elevation_data_m);
+  _active_elevation_indices.clear();
 }
 
 /*****************************************************************************/
@@ -719,6 +722,7 @@ void SpatioTemporalVoxelLayer::matchSize(void)
   const size_t cell_count = static_cast<size_t>(getSizeInCellsX()) * static_cast<size_t>(getSizeInCellsY());
   _elevation_layer.assign(cell_count, _no_elevation_data);
   _elevation_layer_m.assign(cell_count, _no_elevation_data_m);
+  _active_elevation_indices.clear();
 }
 
 /*****************************************************************************/
@@ -824,33 +828,63 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
     matchSize();
   }
 
-  std::fill(_elevation_layer.begin(), _elevation_layer.end(), _no_elevation_data);
-  std::fill(_elevation_layer_m.begin(), _elevation_layer_m.end(), _no_elevation_data_m);
-
-  auto * column_map = _voxel_grid->GetColumnElevationMap();
-  for (const auto & entry : *column_map) {
-    const auto & column = entry.second;
-    if (column.empty()) {
-      continue;
-    }
-    if (_mark_threshold > 0 && static_cast<int>(column.point_count) < _mark_threshold) {
-      continue;
-    }
-
-    uint map_x, map_y;
-    if (worldToMap(entry.first.x, entry.first.y, map_x, map_y)) {
-      const size_t index = getIndex(map_x, map_y);
-      if (index < _elevation_layer.size()) {
-        _elevation_layer[index] = column.elevation_index;
-        _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
-      }
-      touch(entry.first.x, entry.first.y, min_x, min_y, max_x, max_y);
+  for (const size_t index : _active_elevation_indices) {
+    if (index < _elevation_layer.size()) {
+      _elevation_layer[index] = _no_elevation_data;
+      _elevation_layer_m[index] = _no_elevation_data_m;
     }
   }
+
+  std::vector<size_t> new_active_indices;
+  auto * column_map = _voxel_grid->GetColumnElevationMap();
+  auto * touched_columns = _voxel_grid->GetTouchedColumns();
+  if (touched_columns) {
+    new_active_indices.reserve(touched_columns->size());
+    for (const auto & cell : *touched_columns) {
+      uint map_x, map_y;
+      if (!worldToMap(cell.x, cell.y, map_x, map_y)) {
+        continue;
+      }
+      const size_t index = getIndex(map_x, map_y);
+      if (index >= _elevation_layer.size()) {
+        continue;
+      }
+
+      _elevation_layer[index] = _no_elevation_data;
+      _elevation_layer_m[index] = _no_elevation_data_m;
+
+      const auto column_it = column_map->find(cell);
+      if (column_it != column_map->end()) {
+        const auto & column = column_it->second;
+        if (!column.empty() &&
+          !(_mark_threshold > 0 && static_cast<int>(column.point_count) < _mark_threshold))
+        {
+          _elevation_layer[index] = column.elevation_index;
+          _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
+          new_active_indices.push_back(index);
+        }
+      }
+
+      touch(cell.x, cell.y, min_x, min_y, max_x, max_y);
+    }
+  }
+
+  _active_elevation_indices = std::move(new_active_indices);
 
   volume_grid::OccupanyCellSet::iterator cell;
   for (cell = cleared_cells.begin(); cell != cleared_cells.end(); ++cell)
   {
+    uint map_x, map_y;
+    if (!worldToMap(cell->x, cell->y, map_x, map_y)) {
+      continue;
+    }
+    const size_t index = getIndex(map_x, map_y);
+    if (index < _elevation_layer.size()) {
+      if (!column_map || column_map->find(*cell) == column_map->end()) {
+        _elevation_layer[index] = _no_elevation_data;
+        _elevation_layer_m[index] = _no_elevation_data_m;
+      }
+    }
     touch(cell->x, cell->y, min_x, min_y, max_x, max_y);
   }
 }
