@@ -111,99 +111,28 @@ void MeasurementBuffer::BufferROSCloud(
   const sensor_msgs::msg::PointCloud2 & cloud)
 /*****************************************************************************/
 {
-  // add a new measurement to be populated
-  _observation_list.push_front(observation::MeasurementReading());
-
   const std::string origin_frame =
-    _sensor_frame == "" ? cloud.header.frame_id : _sensor_frame;
+    _sensor_frame.empty() ? cloud.header.frame_id : _sensor_frame;
 
   const double stamp_in_seconds = rclcpp::Time(cloud.header.stamp).seconds();
+  observation::MeasurementReading & observation =
+    CreateObservationSlot(stamp_in_seconds);
 
   try {
-    // transform into global frame
-    geometry_msgs::msg::PoseStamped local_pose, global_pose;
-    local_pose.pose.position.x = 0;
-    local_pose.pose.position.y = 0;
-    local_pose.pose.position.z = 0;
-    local_pose.pose.orientation.x = 0;
-    local_pose.pose.orientation.y = 0;
-    local_pose.pose.orientation.z = 0;
-    local_pose.pose.orientation.w = 1;
-    local_pose.header.stamp = cloud.header.stamp;
-    local_pose.header.frame_id = origin_frame;
-
-    _buffer.canTransform(
-      _global_frame, local_pose.header.frame_id,
-      tf2_ros::fromMsg(local_pose.header.stamp), tf2::durationFromSec(0.5));
-    _buffer.transform(local_pose, global_pose, _global_frame);
-
-    _observation_list.front()._origin.x = global_pose.pose.position.x;
-    _observation_list.front()._origin.y = global_pose.pose.position.y;
-    _observation_list.front()._origin.z = global_pose.pose.position.z;
-
-    const auto & orientation = global_pose.pose.orientation;
-    _observation_list.front()._orientation =
-      stvl::core::Quaternion{orientation.x, orientation.y, orientation.z, orientation.w};
-    _observation_list.front()._obstacle_range_in_m = _obstacle_range;
-    _observation_list.front()._min_z_in_m = _min_z;
-    _observation_list.front()._max_z_in_m = _max_z;
-    _observation_list.front()._vertical_fov_in_rad = _vertical_fov;
-    _observation_list.front()._vertical_fov_padding_in_m =
-      _vertical_fov_padding;
-    _observation_list.front()._horizontal_fov_in_rad = _horizontal_fov;
-    _observation_list.front()._decay_acceleration = _decay_acceleration;
-    _observation_list.front()._clearing = _clearing;
-    _observation_list.front()._marking = _marking;
-    _observation_list.front()._model_type = _model_type;
-    _observation_list.front()._stamp_in_seconds = stamp_in_seconds;
+    const auto local_pose = MakeLocalSensorPose(origin_frame, cloud.header.stamp);
+    const auto global_pose = TransformPoseToGlobal(local_pose);
+    PopulateObservationMetadata(observation, global_pose, stamp_in_seconds);
 
     if (_clearing && !_marking) {
-      // no need to buffer points
+      _last_updated = clock_->now();
+      RemoveStaleObservations();
       return;
     }
 
-    // transform the cloud in the global frame
-    point_cloud_ptr cld_global(new sensor_msgs::msg::PointCloud2());
-    geometry_msgs::msg::TransformStamped tf_stamped =
-      _buffer.lookupTransform(
-      _global_frame, cloud.header.frame_id,
-      tf2_ros::fromMsg(cloud.header.stamp));
-    tf2::doTransform(cloud, *cld_global, tf_stamped);
-
-    pcl::PCLPointCloud2::Ptr cloud_pcl(new pcl::PCLPointCloud2());
-    pcl::PCLPointCloud2::Ptr cloud_filtered(new pcl::PCLPointCloud2());
-
-    // remove points that are below or above our height restrictions, and
-    // in the same time, remove NaNs and if user wants to use it, combine with a
-    if (_filter == Filters::VOXEL) {
-      pcl_conversions::toPCL(*cld_global, *cloud_pcl);
-      pcl::VoxelGrid<pcl::PCLPointCloud2> sor;
-      sor.setInputCloud(cloud_pcl);
-      sor.setFilterFieldName("z");
-      sor.setFilterLimits(_min_obstacle_height, _max_obstacle_height);
-      sor.setDownsampleAllData(false);
-      float v_s = static_cast<float>(_voxel_size);
-      sor.setLeafSize(v_s, v_s, v_s);
-      sor.setMinimumPointsNumberPerVoxel(static_cast<unsigned int>(_voxel_min_points));
-      sor.filter(*cloud_filtered);
-      pcl_conversions::fromPCL(*cloud_filtered, *cld_global);
-    } else if (_filter == Filters::PASSTHROUGH) {
-      pcl_conversions::toPCL(*cld_global, *cloud_pcl);
-      pcl::PassThrough<pcl::PCLPointCloud2> pass_through_filter;
-      pass_through_filter.setInputCloud(cloud_pcl);
-      pass_through_filter.setKeepOrganized(false);
-      pass_through_filter.setFilterFieldName("z");
-      pass_through_filter.setFilterLimits(
-        _min_obstacle_height, _max_obstacle_height);
-      pass_through_filter.filter(*cloud_filtered);
-      pcl_conversions::fromPCL(*cloud_filtered, *cld_global);
-    }
-
-    auto pcl_cloud = std::make_shared<stvl::core::PointCloud>();
-    pcl::fromROSMsg(*cld_global, *pcl_cloud);
-    _observation_list.front()._cloud = std::move(pcl_cloud);
-  } catch (tf2::TransformException & ex) {
-    // if fails, remove the empty observation
+    auto global_cloud = TransformCloudToGlobal(cloud);
+    ApplyFilter(*global_cloud);
+    AssignPointCloud(observation, *global_cloud);
+  } catch (const tf2::TransformException & ex) {
     _observation_list.pop_front();
     RCLCPP_ERROR(
       logger_,
@@ -376,6 +305,132 @@ void MeasurementBuffer::Unlock(void)
 /*****************************************************************************/
 {
   _lock.unlock();
+}
+
+/*****************************************************************************/
+observation::MeasurementReading & MeasurementBuffer::CreateObservationSlot(double stamp_in_seconds)
+/*****************************************************************************/
+{
+  _observation_list.push_front(observation::MeasurementReading());
+  _observation_list.front()._stamp_in_seconds = stamp_in_seconds;
+  return _observation_list.front();
+}
+
+/*****************************************************************************/
+geometry_msgs::msg::PoseStamped MeasurementBuffer::MakeLocalSensorPose(
+  const std::string & origin_frame,
+  const rclcpp::Time & stamp) const
+/*****************************************************************************/
+{
+  geometry_msgs::msg::PoseStamped local_pose;
+  local_pose.pose.position.x = 0.0;
+  local_pose.pose.position.y = 0.0;
+  local_pose.pose.position.z = 0.0;
+  local_pose.pose.orientation.x = 0.0;
+  local_pose.pose.orientation.y = 0.0;
+  local_pose.pose.orientation.z = 0.0;
+  local_pose.pose.orientation.w = 1.0;
+  local_pose.header.frame_id = origin_frame;
+  local_pose.header.stamp = stamp;
+  return local_pose;
+}
+
+/*****************************************************************************/
+geometry_msgs::msg::PoseStamped MeasurementBuffer::TransformPoseToGlobal(
+  const geometry_msgs::msg::PoseStamped & local_pose) const
+/*****************************************************************************/
+{
+  geometry_msgs::msg::PoseStamped global_pose;
+  _buffer.canTransform(
+    _global_frame, local_pose.header.frame_id,
+    tf2_ros::fromMsg(local_pose.header.stamp), tf2::durationFromSec(0.5));
+  _buffer.transform(local_pose, global_pose, _global_frame);
+  return global_pose;
+}
+
+/*****************************************************************************/
+point_cloud_ptr MeasurementBuffer::TransformCloudToGlobal(
+  const sensor_msgs::msg::PointCloud2 & cloud) const
+/*****************************************************************************/
+{
+  point_cloud_ptr global_cloud(new sensor_msgs::msg::PointCloud2());
+  geometry_msgs::msg::TransformStamped tf_stamped = _buffer.lookupTransform(
+    _global_frame, cloud.header.frame_id,
+    tf2_ros::fromMsg(cloud.header.stamp));
+  tf2::doTransform(cloud, *global_cloud, tf_stamped);
+  return global_cloud;
+}
+
+/*****************************************************************************/
+void MeasurementBuffer::ApplyFilter(sensor_msgs::msg::PointCloud2 & cloud) const
+/*****************************************************************************/
+{
+  if (_filter == Filters::NONE) {
+    return;
+  }
+
+  pcl::PCLPointCloud2::Ptr cloud_pcl(new pcl::PCLPointCloud2());
+  pcl::PCLPointCloud2::Ptr cloud_filtered(new pcl::PCLPointCloud2());
+  pcl_conversions::toPCL(cloud, *cloud_pcl);
+
+  if (_filter == Filters::VOXEL) {
+    pcl::VoxelGrid<pcl::PCLPointCloud2> sor;
+    sor.setInputCloud(cloud_pcl);
+    sor.setFilterFieldName("z");
+    sor.setFilterLimits(_min_obstacle_height, _max_obstacle_height);
+    sor.setDownsampleAllData(false);
+    float v_s = static_cast<float>(_voxel_size);
+    sor.setLeafSize(v_s, v_s, v_s);
+    sor.setMinimumPointsNumberPerVoxel(static_cast<unsigned int>(_voxel_min_points));
+    sor.filter(*cloud_filtered);
+    pcl_conversions::fromPCL(*cloud_filtered, cloud);
+  } else if (_filter == Filters::PASSTHROUGH) {
+    pcl::PassThrough<pcl::PCLPointCloud2> pass_through_filter;
+    pass_through_filter.setInputCloud(cloud_pcl);
+    pass_through_filter.setKeepOrganized(false);
+    pass_through_filter.setFilterFieldName("z");
+    pass_through_filter.setFilterLimits(_min_obstacle_height, _max_obstacle_height);
+    pass_through_filter.filter(*cloud_filtered);
+    pcl_conversions::fromPCL(*cloud_filtered, cloud);
+  }
+}
+
+/*****************************************************************************/
+void MeasurementBuffer::PopulateObservationMetadata(
+  observation::MeasurementReading & observation,
+  const geometry_msgs::msg::PoseStamped & global_pose,
+  double stamp_in_seconds) const
+/*****************************************************************************/
+{
+  observation._origin.x = global_pose.pose.position.x;
+  observation._origin.y = global_pose.pose.position.y;
+  observation._origin.z = global_pose.pose.position.z;
+
+  const auto & orientation = global_pose.pose.orientation;
+  observation._orientation =
+    stvl::core::Quaternion{orientation.x, orientation.y, orientation.z, orientation.w};
+  observation._obstacle_range_in_m = _obstacle_range;
+  observation._min_z_in_m = _min_z;
+  observation._max_z_in_m = _max_z;
+  observation._vertical_fov_in_rad = _vertical_fov;
+  observation._vertical_fov_padding_in_m = _vertical_fov_padding;
+  observation._horizontal_fov_in_rad = _horizontal_fov;
+  observation._decay_acceleration = _decay_acceleration;
+  observation._clearing = _clearing;
+  observation._marking = _marking;
+  observation._model_type = _model_type;
+  observation._stamp_in_seconds = stamp_in_seconds;
+}
+
+/*****************************************************************************/
+void MeasurementBuffer::AssignPointCloud(
+  observation::MeasurementReading & observation,
+  const sensor_msgs::msg::PointCloud2 & cloud) const
+/*****************************************************************************/
+{
+  auto pcl_cloud = std::make_shared<stvl::core::PointCloud>();
+  pcl::fromROSMsg(cloud, *pcl_cloud);
+  observation._cloud = std::move(pcl_cloud);
 }
 
 }  // namespace buffer

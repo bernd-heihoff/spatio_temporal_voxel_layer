@@ -55,6 +55,7 @@
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
 #include "spatio_temporal_voxel_layer/internal/observation_manager.hpp"
 #include "spatio_temporal_voxel_layer/internal/pruning_manager.hpp"
+#include "spatio_temporal_voxel_layer/bridge/measurement_buffer.hpp"
 // ROS
 #include "rclcpp/rclcpp.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
@@ -170,6 +171,58 @@ private:
    */
   rcl_interfaces::msg::SetParametersResult
     dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
+
+  struct ObservationSourceConfig
+  {
+    std::string name;
+    std::string topic;
+    std::string sensor_frame;
+    std::string data_type;
+    bool inf_is_valid{false};
+    bool marking{true};
+    bool clearing{false};
+    bool clear_after_reading{false};
+    bool enabled{true};
+    double observation_keep_time{0.0};
+    double expected_update_rate{0.0};
+    double min_obstacle_height{0.0};
+    double max_obstacle_height{0.0};
+    double obstacle_range{0.0};
+    double min_z{0.0};
+    double max_z{0.0};
+    double vertical_fov{0.0};
+    double vertical_fov_padding{0.0};
+    double horizontal_fov{0.0};
+    double decay_acceleration{0.0};
+    int voxel_min_points{0};
+    buffer::Filters filter{buffer::Filters::NONE};
+    ModelType model_type{ModelType::DEPTH_CAMERA};
+  };
+
+  void declareLayerParameters();
+  void loadLayerParameters(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    bool & track_unknown_space,
+    double & transform_tolerance,
+    double & map_save_time);
+  ObservationSourceConfig loadObservationSourceConfig(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    const std::string & source);
+  buffer::MeasurementBufferConfig createMeasurementBufferConfig(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    const ObservationSourceConfig & config,
+    double transform_tolerance) const;
+  void configureObservationSource(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    const ObservationSourceConfig & config,
+    const rclcpp::SubscriptionOptions & sub_opt,
+    double transform_tolerance);
+  void finalizeObservationSource(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    const ObservationSourceConfig & config,
+    const std::shared_ptr<buffer::MeasurementBuffer> & buffer,
+    const internal::ObservationManager::SubscriberPtr & subscriber,
+    const internal::ObservationManager::NotifierPtr & notifier);
 
   laser_geometry::LaserProjection _laser_projector;
   std::unique_ptr<internal::ObservationManager> _observation_manager;

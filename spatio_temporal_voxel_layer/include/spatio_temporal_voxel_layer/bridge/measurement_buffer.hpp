@@ -329,6 +329,22 @@ private:
   // Removing old observations from buffer
   void RemoveStaleObservations(void);
 
+  observation::MeasurementReading & CreateObservationSlot(double stamp_in_seconds);
+  geometry_msgs::msg::PoseStamped MakeLocalSensorPose(
+    const std::string & origin_frame,
+    const rclcpp::Time & stamp) const;
+  geometry_msgs::msg::PoseStamped TransformPoseToGlobal(
+    const geometry_msgs::msg::PoseStamped & local_pose) const;
+  point_cloud_ptr TransformCloudToGlobal(const sensor_msgs::msg::PointCloud2 & cloud) const;
+  void ApplyFilter(sensor_msgs::msg::PointCloud2 & cloud) const;
+  void PopulateObservationMetadata(
+    observation::MeasurementReading & observation,
+    const geometry_msgs::msg::PoseStamped & global_pose,
+    double stamp_in_seconds) const;
+  void AssignPointCloud(
+    observation::MeasurementReading & observation,
+    const sensor_msgs::msg::PointCloud2 & cloud) const;
+
   tf2_ros::Buffer & _buffer;
   const rclcpp::Duration _observation_keep_time, _expected_update_rate;
   rclcpp::Time _last_updated;

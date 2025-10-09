@@ -45,6 +45,7 @@
 #include <vector>
 #include <limits>
 #include <algorithm>
+#include <sstream>
 
 #include <pcl_conversions/pcl_conversions.h>
 
@@ -76,6 +77,347 @@ SpatioTemporalVoxelLayer::~SpatioTemporalVoxelLayer(void)
 }
 
 /*****************************************************************************/
+void SpatioTemporalVoxelLayer::declareLayerParameters()
+/*****************************************************************************/
+{
+  declareParameter("observation_sources", rclcpp::ParameterValue(std::string("")));
+  declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
+  declareParameter("enabled", rclcpp::ParameterValue(true));
+  declareParameter("publish_voxel_map", rclcpp::ParameterValue(false));
+  declareParameter("publish_elevation_map", rclcpp::ParameterValue(false));
+  declareParameter("voxel_size", rclcpp::ParameterValue(0.05));
+  declareParameter("combination_method", rclcpp::ParameterValue(1));
+  declareParameter("mark_threshold", rclcpp::ParameterValue(0));
+  declareParameter("update_footprint_enabled", rclcpp::ParameterValue(true));
+  declareParameter(
+    "track_unknown_space",
+    rclcpp::ParameterValue(layered_costmap_->isTrackingUnknown()));
+  declareParameter("decay_model", rclcpp::ParameterValue(0));
+  declareParameter("voxel_decay", rclcpp::ParameterValue(-1.0));
+  declareParameter("mapping_mode", rclcpp::ParameterValue(false));
+  declareParameter("map_save_duration", rclcpp::ParameterValue(60.0));
+  declareParameter(
+    "max_elevation_above_robot_base",
+    rclcpp::ParameterValue(-1.0));
+  declareParameter("prune_enabled", rclcpp::ParameterValue(false));
+  declareParameter("prune_padding", rclcpp::ParameterValue(0.5));
+  declareParameter("prune_distance", rclcpp::ParameterValue(0.0));
+  declareParameter("prune_interval", rclcpp::ParameterValue(0.5));
+  declareParameter("prune_z_min", rclcpp::ParameterValue(-1.0e6));
+  declareParameter("prune_z_max", rclcpp::ParameterValue(1.0e6));
+  declareParameter(
+    "prune_robot_base_frame",
+    rclcpp::ParameterValue(std::string("base_link")));
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::loadLayerParameters(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  bool & track_unknown_space,
+  double & transform_tolerance,
+  double & map_save_time)
+/*****************************************************************************/
+{
+  track_unknown_space = layered_costmap_->isTrackingUnknown();
+  transform_tolerance = 0.2;
+  map_save_time = 60.0;
+
+  node->get_parameter(name_ + ".observation_sources", _topics_string);
+  node->get_parameter(name_ + ".transform_tolerance", transform_tolerance);
+  node->get_parameter(name_ + ".enabled", _enabled);
+  enabled_ = _enabled;
+  node->get_parameter(name_ + ".publish_voxel_map", _publish_voxels);
+  node->get_parameter(name_ + ".publish_elevation_map", _publish_elevation_map);
+  node->get_parameter(name_ + ".voxel_size", _voxel_size);
+  node->get_parameter(name_ + ".combination_method", _combination_method);
+  node->get_parameter(name_ + ".mark_threshold", _mark_threshold);
+  node->get_parameter(name_ + ".update_footprint_enabled", _update_footprint_enabled);
+  node->get_parameter(name_ + ".track_unknown_space", track_unknown_space);
+  int decay_model_int = 0;
+  node->get_parameter(name_ + ".decay_model", decay_model_int);
+  _decay_model = static_cast<volume_grid::GlobalDecayModel>(decay_model_int);
+  node->get_parameter(name_ + ".voxel_decay", _voxel_decay);
+  node->get_parameter(name_ + ".mapping_mode", _mapping_mode);
+  node->get_parameter(name_ + ".map_save_duration", map_save_time);
+
+  double max_elevation_above_robot_base = -1.0;
+  node->get_parameter(
+    name_ + ".max_elevation_above_robot_base",
+    max_elevation_above_robot_base);
+  if (max_elevation_above_robot_base > 0.0) {
+    _max_elevation_above_robot_base = max_elevation_above_robot_base;
+    _limit_elevation = true;
+  } else {
+    _max_elevation_above_robot_base = std::numeric_limits<double>::infinity();
+    _limit_elevation = false;
+  }
+
+  node->get_parameter(name_ + ".prune_enabled", _pruning_config.enabled);
+
+  node->get_parameter(name_ + ".prune_padding", _pruning_config.padding);
+  _pruning_config.padding = std::max(0.0, _pruning_config.padding);
+
+  node->get_parameter(name_ + ".prune_distance", _pruning_config.distance);
+  _pruning_config.distance = std::max(0.0, _pruning_config.distance);
+
+  double prune_interval_seconds = 0.5;
+  node->get_parameter(name_ + ".prune_interval", prune_interval_seconds);
+  if (prune_interval_seconds < 0.0) {
+    RCLCPP_WARN(
+      logger_, "%s prune_interval must be non-negative, clamping to 0.0", getName().c_str());
+    prune_interval_seconds = 0.0;
+  }
+  _pruning_config.interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
+
+  node->get_parameter(name_ + ".prune_z_min", _pruning_config.z_min);
+  node->get_parameter(name_ + ".prune_z_max", _pruning_config.z_max);
+  if (_pruning_config.z_min > _pruning_config.z_max) {
+    RCLCPP_WARN(
+      logger_, "%s prune_z_min > prune_z_max, swapping values.", getName().c_str());
+    std::swap(_pruning_config.z_min, _pruning_config.z_max);
+  }
+  if (_pruning_config.z_min == _pruning_config.z_max) {
+    _pruning_config.z_min -= _voxel_size;
+    _pruning_config.z_max += _voxel_size;
+  }
+
+  node->get_parameter(name_ + ".prune_robot_base_frame", _pruning_config.base_frame);
+  if (_pruning_config.base_frame.empty()) {
+    RCLCPP_WARN(
+      logger_, "%s prune_robot_base_frame is empty, defaulting to base_link.",
+      getName().c_str());
+    _pruning_config.base_frame = "base_link";
+  }
+
+  _pruning_config.voxel_size = _voxel_size;
+  _pruning_config.mapping_mode = _mapping_mode;
+}
+
+/*****************************************************************************/
+SpatioTemporalVoxelLayer::ObservationSourceConfig
+SpatioTemporalVoxelLayer::loadObservationSourceConfig(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  const std::string & source)
+/*****************************************************************************/
+{
+  ObservationSourceConfig config;
+  config.name = source;
+
+  declareParameter(source + "." + "topic", rclcpp::ParameterValue(std::string("")));
+  declareParameter(source + "." + "sensor_frame", rclcpp::ParameterValue(std::string("")));
+  declareParameter(source + "." + "observation_persistence", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "expected_update_rate", rclcpp::ParameterValue(0.0));
+  declareParameter(
+    source + "." + "data_type",
+    rclcpp::ParameterValue(std::string("PointCloud2")));
+  declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(3.0));
+  declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
+  declareParameter(source + "." + "marking", rclcpp::ParameterValue(true));
+  declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
+  declareParameter(source + "." + "obstacle_range", rclcpp::ParameterValue(2.5));
+
+  declareParameter(source + "." + "min_z", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "max_z", rclcpp::ParameterValue(10.0));
+  declareParameter(source + "." + "vertical_fov_angle", rclcpp::ParameterValue(0.7));
+  declareParameter(source + "." + "vertical_fov_padding", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "horizontal_fov_angle", rclcpp::ParameterValue(1.04));
+  declareParameter(source + "." + "decay_acceleration", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "filter", rclcpp::ParameterValue(std::string("passthrough")));
+  declareParameter(source + "." + "voxel_min_points", rclcpp::ParameterValue(0));
+  declareParameter(source + "." + "clear_after_reading", rclcpp::ParameterValue(false));
+  declareParameter(source + "." + "enabled", rclcpp::ParameterValue(true));
+  declareParameter(source + "." + "model_type", rclcpp::ParameterValue(0));
+
+  node->get_parameter(name_ + "." + source + "." + "topic", config.topic);
+  node->get_parameter(name_ + "." + source + "." + "sensor_frame", config.sensor_frame);
+  node->get_parameter(name_ + "." + source + "." + "observation_persistence", config.observation_keep_time);
+  node->get_parameter(name_ + "." + source + "." + "expected_update_rate", config.expected_update_rate);
+  node->get_parameter(name_ + "." + source + "." + "data_type", config.data_type);
+  node->get_parameter(name_ + "." + source + "." + "min_obstacle_height", config.min_obstacle_height);
+  node->get_parameter(name_ + "." + source + "." + "max_obstacle_height", config.max_obstacle_height);
+  node->get_parameter(name_ + "." + source + "." + "inf_is_valid", config.inf_is_valid);
+  node->get_parameter(name_ + "." + source + "." + "marking", config.marking);
+  node->get_parameter(name_ + "." + source + "." + "clearing", config.clearing);
+  node->get_parameter(name_ + "." + source + "." + "obstacle_range", config.obstacle_range);
+
+  node->get_parameter(name_ + "." + source + "." + "min_z", config.min_z);
+  node->get_parameter(name_ + "." + source + "." + "max_z", config.max_z);
+  node->get_parameter(name_ + "." + source + "." + "vertical_fov_angle", config.vertical_fov);
+  node->get_parameter(name_ + "." + source + "." + "vertical_fov_padding", config.vertical_fov_padding);
+  node->get_parameter(name_ + "." + source + "." + "horizontal_fov_angle", config.horizontal_fov);
+  node->get_parameter(name_ + "." + source + "." + "decay_acceleration", config.decay_acceleration);
+
+  std::string filter_str;
+  node->get_parameter(name_ + "." + source + "." + "filter", filter_str);
+  if (filter_str == "passthrough") {
+    RCLCPP_INFO(logger_, "Passthough filter activated.");
+    config.filter = buffer::Filters::PASSTHROUGH;
+  } else if (filter_str == "voxel") {
+    RCLCPP_INFO(logger_, "Voxel filter activated.");
+    config.filter = buffer::Filters::VOXEL;
+  } else {
+    RCLCPP_INFO(logger_, "No filters activated.");
+    config.filter = buffer::Filters::NONE;
+  }
+
+  node->get_parameter(name_ + "." + source + "." + "voxel_min_points", config.voxel_min_points);
+  node->get_parameter(name_ + "." + source + "." + "clear_after_reading", config.clear_after_reading);
+  node->get_parameter(name_ + "." + source + "." + "enabled", config.enabled);
+
+  int model_type_int = 0;
+  node->get_parameter(name_ + "." + source + "." + "model_type", model_type_int);
+  config.model_type = static_cast<ModelType>(model_type_int);
+
+  if (!(config.data_type == "PointCloud2" || config.data_type == "LaserScan")) {
+    throw std::runtime_error("Only topics that use pointclouds or laser scans are supported.");
+  }
+
+  return config;
+}
+
+/*****************************************************************************/
+buffer::MeasurementBufferConfig SpatioTemporalVoxelLayer::createMeasurementBufferConfig(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  const ObservationSourceConfig & config,
+  double transform_tolerance) const
+/*****************************************************************************/
+{
+  return buffer::MeasurementBufferBuilder{}
+         .setSourceName(config.name)
+         .setTopicName(config.topic)
+         .setObservationKeepTime(config.observation_keep_time)
+         .setExpectedUpdateRate(config.expected_update_rate)
+         .setMinObstacleHeight(config.min_obstacle_height)
+         .setMaxObstacleHeight(config.max_obstacle_height)
+         .setObstacleRange(config.obstacle_range)
+         .setTfBuffer(tf_)
+         .setGlobalFrame(_global_frame)
+         .setSensorFrame(config.sensor_frame)
+         .setTfTolerance(transform_tolerance)
+         .setMinZ(config.min_z)
+         .setMaxZ(config.max_z)
+         .setVerticalFov(config.vertical_fov)
+         .setVerticalFovPadding(config.vertical_fov_padding)
+         .setHorizontalFov(config.horizontal_fov)
+         .setDecayAcceleration(config.decay_acceleration)
+         .setMarking(config.marking)
+         .setClearing(config.clearing)
+         .setVoxelSize(_voxel_size)
+         .setFilter(config.filter)
+         .setVoxelMinPoints(config.voxel_min_points)
+         .setEnabled(config.enabled)
+         .setClearBufferAfterReading(config.clear_after_reading)
+         .setModelType(config.model_type)
+         .setClock(node->get_clock())
+         .setLogger(node->get_logger())
+         .build();
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::configureObservationSource(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  const ObservationSourceConfig & config,
+  const rclcpp::SubscriptionOptions & sub_opt,
+  double transform_tolerance)
+/*****************************************************************************/
+{
+  auto buffer_config = createMeasurementBufferConfig(node, config, transform_tolerance);
+  auto buffer = std::make_shared<buffer::MeasurementBuffer>(buffer_config);
+
+  if (_observation_manager) {
+    _observation_manager->registerBuffer(buffer, config.marking, config.clearing);
+  }
+
+  rmw_qos_profile_t custom_qos_profile = rmw_qos_profile_sensor_data;
+  custom_qos_profile.depth = 50;
+
+  internal::ObservationManager::SubscriberPtr subscriber;
+  internal::ObservationManager::NotifierPtr notifier;
+
+  if (config.data_type == "LaserScan") {
+    auto laser_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::LaserScan,
+        rclcpp_lifecycle::LifecycleNode>>(node, config.topic, custom_qos_profile, sub_opt);
+    laser_sub->unsubscribe();
+
+    auto laser_filter = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::LaserScan>>(
+      *laser_sub, *tf_, _global_frame, 50,
+      node->get_node_logging_interface(),
+      node->get_node_clock_interface(),
+      tf2::durationFromSec(transform_tolerance));
+
+    if (config.inf_is_valid) {
+      laser_filter->registerCallback(
+        std::bind(&SpatioTemporalVoxelLayer::LaserScanValidInfCallback, this, _1, buffer));
+    } else {
+      laser_filter->registerCallback(
+        std::bind(&SpatioTemporalVoxelLayer::LaserScanCallback, this, _1, buffer));
+    }
+
+    laser_filter->setTolerance(rclcpp::Duration::from_seconds(0.05));
+
+    subscriber = laser_sub;
+    notifier = laser_filter;
+  } else if (config.data_type == "PointCloud2") {
+    auto cloud_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2,
+        rclcpp_lifecycle::LifecycleNode>>(node, config.topic, custom_qos_profile, sub_opt);
+    cloud_sub->unsubscribe();
+
+    auto cloud_filter = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>>(
+      *cloud_sub, *tf_, _global_frame, 50,
+      node->get_node_logging_interface(),
+      node->get_node_clock_interface(),
+      tf2::durationFromSec(transform_tolerance));
+    cloud_filter->registerCallback(
+      std::bind(&SpatioTemporalVoxelLayer::PointCloud2Callback, this, _1, buffer));
+
+    subscriber = cloud_sub;
+    notifier = cloud_filter;
+  }
+
+  finalizeObservationSource(node, config, buffer, subscriber, notifier);
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::finalizeObservationSource(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  const ObservationSourceConfig & config,
+  const std::shared_ptr<buffer::MeasurementBuffer> & buffer,
+  const internal::ObservationManager::SubscriberPtr & subscriber,
+  const internal::ObservationManager::NotifierPtr & notifier)
+/*****************************************************************************/
+{
+  if (_observation_manager) {
+    if (subscriber) {
+      _observation_manager->addSubscriber(subscriber);
+    }
+    if (notifier) {
+      _observation_manager->addNotifier(notifier);
+    }
+  }
+
+  auto toggle_srv_callback = std::bind(
+    &SpatioTemporalVoxelLayer::BufferEnablerCallback, this,
+    _1, _2, _3, buffer, subscriber);
+
+  std::string toggle_topic = config.name + "/toggle_enabled";
+  auto server = node->create_service<std_srvs::srv::SetBool>(
+    toggle_topic, toggle_srv_callback, rmw_qos_profile_services_default, callback_group_);
+
+  if (_observation_manager) {
+    _observation_manager->addEnableService(server);
+  }
+
+  if (!config.sensor_frame.empty() && notifier) {
+    std::vector<std::string> target_frames;
+    target_frames.reserve(2);
+    target_frames.push_back(_global_frame);
+    target_frames.push_back(config.sensor_frame);
+    notifier->setTargetFrames(target_frames);
+  }
+}
+
+/*****************************************************************************/
 void SpatioTemporalVoxelLayer::onInitialize(void)
 /*****************************************************************************/
 {
@@ -89,113 +431,13 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
     logger_, "%s's global frame is %s.",
     getName().c_str(), _global_frame.c_str());
 
-  bool track_unknown_space;
-  double transform_tolerance, map_save_time;
-  int decay_model_int;
-  // source names
   auto node = node_.lock();
-  declareParameter("observation_sources", rclcpp::ParameterValue(std::string("")));
-  node->get_parameter(name_ + ".observation_sources", _topics_string);
-  // timeout in seconds for transforms
-  declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
-  node->get_parameter(name_ + ".transform_tolerance", transform_tolerance);
-  // whether to default on
-  declareParameter("enabled", rclcpp::ParameterValue(true));
-  node->get_parameter(name_ + ".enabled", _enabled);
-  enabled_ = _enabled;
-  // publish the voxel grid to visualize
-  declareParameter("publish_voxel_map", rclcpp::ParameterValue(false));
-  node->get_parameter(name_ + ".publish_voxel_map", _publish_voxels);
-  declareParameter("publish_elevation_map", rclcpp::ParameterValue(false));
-  node->get_parameter(name_ + ".publish_elevation_map", _publish_elevation_map);
-  // size of each voxel in meters
-  declareParameter("voxel_size", rclcpp::ParameterValue(0.05));
-  node->get_parameter(name_ + ".voxel_size", _voxel_size);
-  // 1=takes highest in layers, 0=takes current layer
-  declareParameter("combination_method", rclcpp::ParameterValue(1));
-  node->get_parameter(name_ + ".combination_method", _combination_method);
-  // number of voxels per vertical needed to have obstacle
-  declareParameter("mark_threshold", rclcpp::ParameterValue(0));
-  node->get_parameter(name_ + ".mark_threshold", _mark_threshold);
-  // clear under robot footprint
-  declareParameter("update_footprint_enabled", rclcpp::ParameterValue(true));
-  node->get_parameter(name_ + ".update_footprint_enabled", _update_footprint_enabled);
-  // keep tabs on unknown space
-  declareParameter(
-    "track_unknown_space",
-    rclcpp::ParameterValue(layered_costmap_->isTrackingUnknown()));
-  node->get_parameter(name_ + ".track_unknown_space", track_unknown_space);
-  declareParameter("decay_model", rclcpp::ParameterValue(0));
-  node->get_parameter(name_ + ".decay_model", decay_model_int);
-  _decay_model = static_cast<volume_grid::GlobalDecayModel>(decay_model_int);
-  // decay param
-  declareParameter("voxel_decay", rclcpp::ParameterValue(-1.0));
-  node->get_parameter(name_ + ".voxel_decay", _voxel_decay);
-  // whether to map or navigate
-  declareParameter("mapping_mode", rclcpp::ParameterValue(false));
-  node->get_parameter(name_ + ".mapping_mode", _mapping_mode);
-  // if mapping, how often to save a map for safety
-  declareParameter("map_save_duration", rclcpp::ParameterValue(60.0));
-  node->get_parameter(name_ + ".map_save_duration", map_save_time);
+  declareLayerParameters();
 
-  double max_elevation_above_robot_base = -1.0;
-  declareParameter("max_elevation_above_robot_base", rclcpp::ParameterValue(max_elevation_above_robot_base));
-  node->get_parameter(name_ + ".max_elevation_above_robot_base", max_elevation_above_robot_base);
-  if (max_elevation_above_robot_base > 0.0) {
-    _max_elevation_above_robot_base = max_elevation_above_robot_base;
-    _limit_elevation = true;
-  } else {
-    _max_elevation_above_robot_base = std::numeric_limits<double>::infinity();
-    _limit_elevation = false;
-  }
-
-  declareParameter("prune_enabled", rclcpp::ParameterValue(false));
-  node->get_parameter(name_ + ".prune_enabled", _pruning_config.enabled);
-
-  declareParameter("prune_padding", rclcpp::ParameterValue(0.5));
-  node->get_parameter(name_ + ".prune_padding", _pruning_config.padding);
-  _pruning_config.padding = std::max(0.0, _pruning_config.padding);
-
-  declareParameter("prune_distance", rclcpp::ParameterValue(0.0));
-  node->get_parameter(name_ + ".prune_distance", _pruning_config.distance);
-  _pruning_config.distance = std::max(0.0, _pruning_config.distance);
-
-  double prune_interval_seconds = 0.5;
-  declareParameter("prune_interval", rclcpp::ParameterValue(prune_interval_seconds));
-  node->get_parameter(name_ + ".prune_interval", prune_interval_seconds);
-  if (prune_interval_seconds < 0.0) {
-    RCLCPP_WARN(
-      logger_, "%s prune_interval must be non-negative, clamping to 0.0", getName().c_str());
-    prune_interval_seconds = 0.0;
-  }
-  _pruning_config.interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
-
-  // Vertical limits are treated as offsets from the robot base link when pruning is executed.
-  declareParameter("prune_z_min", rclcpp::ParameterValue(-1.0e6));
-  declareParameter("prune_z_max", rclcpp::ParameterValue(1.0e6));
-  node->get_parameter(name_ + ".prune_z_min", _pruning_config.z_min);
-  node->get_parameter(name_ + ".prune_z_max", _pruning_config.z_max);
-  if (_pruning_config.z_min > _pruning_config.z_max) {
-    RCLCPP_WARN(
-      logger_, "%s prune_z_min > prune_z_max, swapping values.", getName().c_str());
-    std::swap(_pruning_config.z_min, _pruning_config.z_max);
-  }
-  if (_pruning_config.z_min == _pruning_config.z_max) {
-    _pruning_config.z_min -= _voxel_size;
-    _pruning_config.z_max += _voxel_size;
-  }
-
-  declareParameter("prune_robot_base_frame", rclcpp::ParameterValue(std::string("base_link")));
-  node->get_parameter(name_ + ".prune_robot_base_frame", _pruning_config.base_frame);
-  if (_pruning_config.base_frame.empty()) {
-    RCLCPP_WARN(
-      logger_, "%s prune_robot_base_frame is empty, defaulting to base_link.",
-      getName().c_str());
-    _pruning_config.base_frame = "base_link";
-  }
-
-  _pruning_config.voxel_size = _voxel_size;
-  _pruning_config.mapping_mode = _mapping_mode;
+  bool track_unknown_space;
+  double transform_tolerance;
+  double map_save_time;
+  loadLayerParameters(node, track_unknown_space, transform_tolerance, map_save_time);
 
   RCLCPP_INFO(
     logger_,
@@ -216,7 +458,7 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   sub_opt.callback_group = callback_group_;
 
   auto pub_opt = rclcpp::PublisherOptions();
-  sub_opt.callback_group = callback_group_;
+  pub_opt.callback_group = callback_group_;
 
   _voxel_pub = node->create_publisher<sensor_msgs::msg::PointCloud2>(
     "voxel_grid", rclcpp::QoS(1), pub_opt);
@@ -249,218 +491,15 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
 
   RCLCPP_INFO(logger_, "%s created underlying voxel grid.", getName().c_str());
 
+  std::vector<ObservationSourceConfig> source_configs;
   std::stringstream ss(_topics_string);
-  std::string source;
-  while (ss >> source) {
-    // get the parameters for the specific topic
-    double observation_keep_time, expected_update_rate, min_obstacle_height, max_obstacle_height;
-    double min_z, max_z, vFOV, vFOVPadding;
-    double hFOV, decay_acceleration, obstacle_range;
-    std::string topic, sensor_frame, data_type, filter_str;
-    bool inf_is_valid = false, clearing, marking;
-    bool clear_after_reading, enabled;
-    int voxel_min_points;
-    buffer::Filters filter;
+  std::string source_name;
+  while (ss >> source_name) {
+    source_configs.emplace_back(loadObservationSourceConfig(node, source_name));
+  }
 
-    declareParameter(source + "." + "topic", rclcpp::ParameterValue(std::string("")));
-    declareParameter(source + "." + "sensor_frame", rclcpp::ParameterValue(std::string("")));
-    declareParameter(source + "." + "observation_persistence", rclcpp::ParameterValue(0.0));
-    declareParameter(source + "." + "expected_update_rate", rclcpp::ParameterValue(0.0));
-    declareParameter(
-      source + "." + "data_type",
-      rclcpp::ParameterValue(std::string("PointCloud2")));
-    declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
-    declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(3.0));
-    declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
-    declareParameter(source + "." + "marking", rclcpp::ParameterValue(true));
-    declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
-    declareParameter(source + "." + "obstacle_range", rclcpp::ParameterValue(2.5));
-
-    declareParameter(source + "." + "min_z", rclcpp::ParameterValue(0.0));
-    declareParameter(source + "." + "max_z", rclcpp::ParameterValue(10.0));
-    declareParameter(source + "." + "vertical_fov_angle", rclcpp::ParameterValue(0.7));
-    declareParameter(source + "." + "vertical_fov_padding", rclcpp::ParameterValue(0.0));
-    declareParameter(source + "." + "horizontal_fov_angle", rclcpp::ParameterValue(1.04));
-    declareParameter(source + "." + "decay_acceleration", rclcpp::ParameterValue(0.0));
-    declareParameter(source + "." + "filter", rclcpp::ParameterValue(std::string("passthrough")));
-    declareParameter(source + "." + "voxel_min_points", rclcpp::ParameterValue(0));
-    declareParameter(source + "." + "clear_after_reading", rclcpp::ParameterValue(false));
-    declareParameter(source + "." + "enabled", rclcpp::ParameterValue(true));
-    declareParameter(source + "." + "model_type", rclcpp::ParameterValue(0));
-
-    node->get_parameter(name_ + "." + source + "." + "topic", topic);
-    node->get_parameter(name_ + "." + source + "." + "sensor_frame", sensor_frame);
-    node->get_parameter(
-      name_ + "." + source + "." + "observation_persistence",
-      observation_keep_time);
-    node->get_parameter(
-      name_ + "." + source + "." + "expected_update_rate",
-      expected_update_rate);
-    node->get_parameter(name_ + "." + source + "." + "data_type", data_type);
-    node->get_parameter(name_ + "." + source + "." + "min_obstacle_height", min_obstacle_height);
-    node->get_parameter(name_ + "." + source + "." + "max_obstacle_height", max_obstacle_height);
-    node->get_parameter(name_ + "." + source + "." + "inf_is_valid", inf_is_valid);
-    node->get_parameter(name_ + "." + source + "." + "marking", marking);
-    node->get_parameter(name_ + "." + source + "." + "clearing", clearing);
-    node->get_parameter(name_ + "." + source + "." + "obstacle_range", obstacle_range);
-
-    // minimum distance from camera it can see
-    node->get_parameter(name_ + "." + source + "." + "min_z", min_z);
-    // maximum distance from camera it can see
-    node->get_parameter(name_ + "." + source + "." + "max_z", max_z);
-    // vertical FOV angle in rad
-    node->get_parameter(name_ + "." + source + "." + "vertical_fov_angle", vFOV);
-    // vertical FOV padding in meters (3D lidar frustum only)
-    node->get_parameter(name_ + "." + source + "." + "vertical_fov_padding", vFOVPadding);
-    // horizontal FOV angle in rad
-    node->get_parameter(name_ + "." + source + "." + "horizontal_fov_angle", hFOV);
-    // acceleration scales the model's decay in presence of readings
-    node->get_parameter(name_ + "." + source + "." + "decay_acceleration", decay_acceleration);
-    // performs an approximate voxel filter over the data to reduce
-    node->get_parameter(name_ + "." + source + "." + "filter", filter_str);
-    // minimum points per voxel for voxel filter
-    node->get_parameter(name_ + "." + source + "." + "voxel_min_points", voxel_min_points);
-    // clears measurement buffer after reading values from it
-    node->get_parameter(name_ + "." + source + "." + "clear_after_reading", clear_after_reading);
-    // Whether the frustum is enabled on startup. Can be toggled with service
-    node->get_parameter(name_ + "." + source + "." + "enabled", enabled);
-    // model type - default depth camera frustum model
-    int model_type_int = 0;
-    node->get_parameter(name_ + "." + source + "." + "model_type", model_type_int);
-    ModelType model_type = static_cast<ModelType>(model_type_int);
-
-    if (filter_str == "passthrough") {
-      RCLCPP_INFO(logger_, "Passthough filter activated.");
-      filter = buffer::Filters::PASSTHROUGH;
-    } else if (filter_str == "voxel") {
-      RCLCPP_INFO(logger_, "Voxel filter activated.");
-      filter = buffer::Filters::VOXEL;
-    } else {
-      RCLCPP_INFO(logger_, "No filters activated.");
-      filter = buffer::Filters::NONE;
-    }
-
-    if (!(data_type == "PointCloud2" || data_type == "LaserScan")) {
-      throw std::runtime_error(
-              "Only topics that use pointclouds or laser scans are supported.");
-    }
-
-    auto buffer_config = buffer::MeasurementBufferBuilder{}
-      .setSourceName(source)
-      .setTopicName(topic)
-      .setObservationKeepTime(observation_keep_time)
-      .setExpectedUpdateRate(expected_update_rate)
-      .setMinObstacleHeight(min_obstacle_height)
-      .setMaxObstacleHeight(max_obstacle_height)
-      .setObstacleRange(obstacle_range)
-  .setTfBuffer(tf_)
-      .setGlobalFrame(_global_frame)
-      .setSensorFrame(sensor_frame)
-      .setTfTolerance(transform_tolerance)
-      .setMinZ(min_z)
-      .setMaxZ(max_z)
-      .setVerticalFov(vFOV)
-      .setVerticalFovPadding(vFOVPadding)
-      .setHorizontalFov(hFOV)
-      .setDecayAcceleration(decay_acceleration)
-      .setMarking(marking)
-      .setClearing(clearing)
-      .setVoxelSize(_voxel_size)
-      .setFilter(filter)
-      .setVoxelMinPoints(voxel_min_points)
-      .setEnabled(enabled)
-      .setClearBufferAfterReading(clear_after_reading)
-      .setModelType(model_type)
-      .setClock(node->get_clock())
-      .setLogger(node->get_logger())
-      .build();
-
-    auto buffer = std::make_shared<buffer::MeasurementBuffer>(buffer_config);
-
-    if (_observation_manager) {
-      _observation_manager->registerBuffer(buffer, marking, clearing);
-    }
-
-    rmw_qos_profile_t custom_qos_profile = rmw_qos_profile_sensor_data;
-    custom_qos_profile.depth = 50;
-
-    internal::ObservationManager::SubscriberPtr subscriber;
-    internal::ObservationManager::NotifierPtr notifier;
-
-    // create a callback for the topic
-    if (data_type == "LaserScan") {
-      auto laser_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::LaserScan,
-          rclcpp_lifecycle::LifecycleNode>>(node, topic, custom_qos_profile, sub_opt);
-      laser_sub->unsubscribe();
-
-      auto laser_filter = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::LaserScan>>(
-        *laser_sub, *tf_, _global_frame, 50,
-        node->get_node_logging_interface(),
-        node->get_node_clock_interface(),
-        tf2::durationFromSec(transform_tolerance));
-
-      if (inf_is_valid) {
-        laser_filter->registerCallback(
-          std::bind(&SpatioTemporalVoxelLayer::LaserScanValidInfCallback, this, _1, buffer));
-      } else {
-        laser_filter->registerCallback(
-          std::bind(&SpatioTemporalVoxelLayer::LaserScanCallback, this, _1, buffer));
-      }
-
-      laser_filter->setTolerance(rclcpp::Duration::from_seconds(0.05));
-
-      subscriber = laser_sub;
-      notifier = laser_filter;
-    } else if (data_type == "PointCloud2") {
-      auto cloud_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2,
-          rclcpp_lifecycle::LifecycleNode>>(node, topic, custom_qos_profile, sub_opt);
-      cloud_sub->unsubscribe();
-
-      auto cloud_filter = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>>(
-        *cloud_sub, *tf_, _global_frame, 50,
-        node->get_node_logging_interface(),
-        node->get_node_clock_interface(),
-        tf2::durationFromSec(transform_tolerance));
-      cloud_filter->registerCallback(
-        std::bind(&SpatioTemporalVoxelLayer::PointCloud2Callback, this, _1, buffer));
-
-      subscriber = cloud_sub;
-      notifier = cloud_filter;
-    }
-
-    if (_observation_manager) {
-      if (subscriber) {
-        _observation_manager->addSubscriber(subscriber);
-      }
-      if (notifier) {
-        _observation_manager->addNotifier(notifier);
-      }
-    }
-
-    std::function<void(const std::shared_ptr<rmw_request_id_t>,
-      std_srvs::srv::SetBool::Request::SharedPtr,
-      std_srvs::srv::SetBool::Response::SharedPtr)> toggle_srv_callback;
-
-    toggle_srv_callback = std::bind(
-  &SpatioTemporalVoxelLayer::BufferEnablerCallback, this,
-  _1, _2, _3, buffer, subscriber);
-    std::string toggle_topic = source + "/toggle_enabled";
-    auto server = node->create_service<std_srvs::srv::SetBool>(
-      toggle_topic, toggle_srv_callback, rmw_qos_profile_services_default, callback_group_);
-
-    if (_observation_manager) {
-      _observation_manager->addEnableService(server);
-    }
-
-    if (sensor_frame != "") {
-      std::vector<std::string> target_frames;
-      target_frames.reserve(2);
-      target_frames.push_back(_global_frame);
-      target_frames.push_back(sensor_frame);
-      if (notifier) {
-        notifier->setTargetFrames(target_frames);
-      }
-    }
+  for (const auto & config : source_configs) {
+    configureObservationSource(node, config, sub_opt, transform_tolerance);
   }
 
   current_ = true;
