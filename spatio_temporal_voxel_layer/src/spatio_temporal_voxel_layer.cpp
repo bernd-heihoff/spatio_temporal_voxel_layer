@@ -46,9 +46,12 @@
 #include <limits>
 #include <algorithm>
 
+#include <pcl_conversions/pcl_conversions.h>
+
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_layer.hpp"
 #include "openvdb/math/BBox.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "sensor_msgs/point_cloud2_iterator.hpp"
 
 namespace spatio_temporal_voxel_layer
 {
@@ -224,8 +227,13 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   _grid_saver = node->create_service<spatio_temporal_voxel_layer::srv::SaveGrid>(
     "save_grid", save_grid_callback, rmw_qos_profile_services_default, callback_group_);
 
+  auto grid_clock = node->get_clock();
+  volume_grid::SpatioTemporalVoxelGrid::TimeSource time_source =
+    [grid_clock]() -> double {
+      return grid_clock ? grid_clock->now().seconds() : 0.0;
+    };
   _voxel_grid = std::make_unique<volume_grid::SpatioTemporalVoxelGrid>(
-    node->get_clock(), _voxel_size, static_cast<double>(default_value_), _decay_model,
+    time_source, _voxel_size, static_cast<double>(default_value_), _decay_model,
     _voxel_decay, _publish_voxels);
 
   _pruning_manager = std::make_unique<internal::PruningManager>(tf_, _global_frame);
@@ -937,27 +945,29 @@ void SpatioTemporalVoxelLayer::updateBounds(
 
   // publish point cloud in navigation mode
   if (_publish_voxels && !_mapping_mode) {
-    std::unique_ptr<sensor_msgs::msg::PointCloud2> pc2 =
-      std::make_unique<sensor_msgs::msg::PointCloud2>();
-    _voxel_grid->GetOccupancyPointCloud(pc2);
-    pc2->header.frame_id = _global_frame;
-    pc2->header.stamp = node->now();
-    _voxel_pub->publish(*pc2);
+    stvl::core::PointCloud occupancy_cloud;
+    _voxel_grid->GetOccupancyPointCloud(occupancy_cloud);
+    sensor_msgs::msg::PointCloud2 pc2_msg;
+    pcl::toROSMsg(occupancy_cloud, pc2_msg);
+    pc2_msg.header.frame_id = _global_frame;
+    pc2_msg.header.stamp = node->now();
+    _voxel_pub->publish(pc2_msg);
   }
 
   if (_publish_elevation_map && !_mapping_mode && _elevation_pub) {
-    std::unique_ptr<sensor_msgs::msg::PointCloud2> elevation_pc2 =
-      std::make_unique<sensor_msgs::msg::PointCloud2>();
-    _voxel_grid->GetElevationPointCloud(elevation_pc2);
+    stvl::core::PointCloud elevation_cloud;
+    _voxel_grid->GetElevationPointCloud(elevation_cloud);
+    sensor_msgs::msg::PointCloud2 elevation_msg;
+    pcl::toROSMsg(elevation_cloud, elevation_msg);
     if (_limit_elevation) {
       double elevation_base_z = 0.0;
       if (getRobotBaseHeight(elevation_base_z)) {
-        filterElevationPointCloud(*elevation_pc2, elevation_base_z);
+        filterElevationPointCloud(elevation_msg, elevation_base_z);
       }
     }
-    elevation_pc2->header.frame_id = _global_frame;
-    elevation_pc2->header.stamp = node->now();
-    _elevation_pub->publish(*elevation_pc2);
+    elevation_msg.header.frame_id = _global_frame;
+    elevation_msg.header.stamp = node->now();
+    _elevation_pub->publish(elevation_msg);
   }
 
   // update footprint

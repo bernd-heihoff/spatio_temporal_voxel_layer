@@ -37,6 +37,7 @@
 
 #include <string>
 #include <memory>
+#include <utility>
 #include <vector>
 #include "spatio_temporal_voxel_layer/measurement_buffer.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -97,6 +98,8 @@ void MeasurementBuffer::BufferROSCloud(
   const std::string origin_frame =
     _sensor_frame == "" ? cloud.header.frame_id : _sensor_frame;
 
+  const double stamp_in_seconds = rclcpp::Time(cloud.header.stamp).seconds();
+
   try {
     // transform into global frame
     geometry_msgs::msg::PoseStamped local_pose, global_pose;
@@ -119,7 +122,9 @@ void MeasurementBuffer::BufferROSCloud(
     _observation_list.front()._origin.y = global_pose.pose.position.y;
     _observation_list.front()._origin.z = global_pose.pose.position.z;
 
-    _observation_list.front()._orientation = global_pose.pose.orientation;
+    const auto & orientation = global_pose.pose.orientation;
+    _observation_list.front()._orientation =
+      stvl::core::Quaternion{orientation.x, orientation.y, orientation.z, orientation.w};
     _observation_list.front()._obstacle_range_in_m = _obstacle_range;
     _observation_list.front()._min_z_in_m = _min_z;
     _observation_list.front()._max_z_in_m = _max_z;
@@ -131,6 +136,7 @@ void MeasurementBuffer::BufferROSCloud(
     _observation_list.front()._clearing = _clearing;
     _observation_list.front()._marking = _marking;
     _observation_list.front()._model_type = _model_type;
+    _observation_list.front()._stamp_in_seconds = stamp_in_seconds;
 
     if (_clearing && !_marking) {
       // no need to buffer points
@@ -174,7 +180,9 @@ void MeasurementBuffer::BufferROSCloud(
       pcl_conversions::fromPCL(*cloud_filtered, *cld_global);
     }
 
-    _observation_list.front()._cloud.reset(cld_global.release());
+    auto pcl_cloud = std::make_shared<stvl::core::PointCloud>();
+    pcl::fromROSMsg(*cld_global, *pcl_cloud);
+    _observation_list.front()._cloud = std::move(pcl_cloud);
   } catch (tf2::TransformException & ex) {
     // if fails, remove the empty observation
     _observation_list.pop_front();
@@ -218,9 +226,8 @@ void MeasurementBuffer::RemoveStaleObservations(void)
   }
 
   for (it = _observation_list.begin(); it != _observation_list.end(); ++it) {
-    const rclcpp::Duration time_diff = clock_->now() - it->_cloud->header.stamp;
-
-    if (time_diff > _observation_keep_time) {
+    const double time_diff = clock_->now().seconds() - it->_stamp_in_seconds;
+    if (time_diff > _observation_keep_time.seconds()) {
       _observation_list.erase(it, _observation_list.end());
       return;
     }

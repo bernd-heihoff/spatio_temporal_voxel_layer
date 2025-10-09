@@ -64,8 +64,8 @@ public:
   virtual bool IsInside(const openvdb::Vec3d & pt);
 
   // set pose of 3d lidar in global space
-  virtual void SetPosition(const geometry_msgs::msg::Point & origin);
-  virtual void SetOrientation(const geometry_msgs::msg::Quaternion & quat);
+  virtual void SetPosition(const stvl::core::Point & origin) override;
+  virtual void SetOrientation(const stvl::core::Quaternion & quat) override;
 
 private:
   // utils to find useful frustum metadata

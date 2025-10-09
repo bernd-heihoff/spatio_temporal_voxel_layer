@@ -49,8 +49,10 @@ TEST(PruningManagerTest, DisabledPruningSkipsBoundingBox)
   manager.resetState(rclcpp::Time(0, 0, RCL_ROS_TIME), 0.0, 0.0);
 
   auto clock = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);
+  volume_grid::SpatioTemporalVoxelGrid::TimeSource time_source =
+    [clock]() -> double {return clock->now().seconds();};
   volume_grid::SpatioTemporalVoxelGrid grid(
-    clock, 0.1f, 0.0, volume_grid::GlobalDecayModel::PERSISTENT, -1.0, false);
+    time_source, 0.1f, 0.0, volume_grid::GlobalDecayModel::PERSISTENT, -1.0, false);
 
   const bool pruned = manager.pruneIfNeeded(
     makeContext(0.0, 0.0), rclcpp::Time(1, 0, RCL_ROS_TIME), grid, rclcpp::get_logger("test"));
@@ -68,8 +70,10 @@ TEST(PruningManagerTest, BoundingBoxComputedWhenConditionsMet)
   manager.resetState(rclcpp::Time(0, 0, RCL_ROS_TIME), 0.0, 0.0);
 
   auto clock = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);
+  volume_grid::SpatioTemporalVoxelGrid::TimeSource time_source =
+    [clock]() -> double {return clock->now().seconds();};
   volume_grid::SpatioTemporalVoxelGrid grid(
-    clock, 0.1f, 0.0, volume_grid::GlobalDecayModel::PERSISTENT, -1.0, false);
+    time_source, 0.1f, 0.0, volume_grid::GlobalDecayModel::PERSISTENT, -1.0, false);
 
   const double origin_x = 2.0;
   const double origin_y = -1.0;

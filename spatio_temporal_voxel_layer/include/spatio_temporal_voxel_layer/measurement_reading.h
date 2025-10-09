@@ -42,10 +42,7 @@
 
 #include <memory>
 
-// msgs
-#include "geometry_msgs/msg/point.hpp"
-#include "geometry_msgs/msg/quaternion.hpp"
-#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "spatio_temporal_voxel_layer/core/types.hpp"
 
 enum ModelType
 {
@@ -62,19 +59,19 @@ struct MeasurementReading
   /*****************************************************************************/
   MeasurementReading()
   /*****************************************************************************/
-    : _cloud(std::make_shared < sensor_msgs::msg::PointCloud2 > ())
+    : _cloud(std::make_shared<stvl::core::PointCloud>())
   {
   }
 
   /*****************************************************************************/
   MeasurementReading(
-    geometry_msgs::msg::Point & origin, sensor_msgs::msg::PointCloud2 cloud,
+  stvl::core::Point & origin, stvl::core::PointCloud cloud,
     double obstacle_range, double min_z, double max_z, double vFOV,
     double vFOVPadding, double hFOV, double decay_acceleration, bool marking,
-    bool clearing, ModelType model_type)
+    bool clearing, ModelType model_type, double stamp_in_seconds = 0.0)
   /*****************************************************************************/
     : _origin(origin),
-    _cloud(std::make_shared < sensor_msgs::msg::PointCloud2 > (cloud)),
+  _cloud(std::make_shared<stvl::core::PointCloud>(cloud)),
     _obstacle_range_in_m(obstacle_range),
     _min_z_in_m(min_z),
     _max_z_in_m(max_z),
@@ -84,15 +81,19 @@ struct MeasurementReading
     _marking(marking),
     _clearing(clearing),
     _decay_acceleration(decay_acceleration),
-    _model_type(model_type)
+    _model_type(model_type),
+    _stamp_in_seconds(stamp_in_seconds)
   {
   }
 
   /*****************************************************************************/
-  MeasurementReading(sensor_msgs::msg::PointCloud2 cloud, double obstacle_range)
+  MeasurementReading(
+    stvl::core::PointCloud cloud, double obstacle_range,
+    double stamp_in_seconds = 0.0)
   /*****************************************************************************/
-    : _cloud(std::make_shared < sensor_msgs::msg::PointCloud2 > (cloud)),
-    _obstacle_range_in_m(obstacle_range)
+    : _cloud(std::make_shared<stvl::core::PointCloud>(cloud)),
+    _obstacle_range_in_m(obstacle_range),
+    _stamp_in_seconds(stamp_in_seconds)
   {
   }
 
@@ -100,8 +101,8 @@ struct MeasurementReading
   MeasurementReading(const MeasurementReading & obs)
   /*****************************************************************************/
     : _origin(obs._origin),
-    _orientation(obs._orientation),
-    _cloud(std::make_shared < sensor_msgs::msg::PointCloud2 > (*(obs._cloud))),
+  _orientation(obs._orientation),
+  _cloud(std::make_shared<stvl::core::PointCloud>(*(obs._cloud))),
     _obstacle_range_in_m(obs._obstacle_range_in_m),
     _min_z_in_m(obs._min_z_in_m),
     _max_z_in_m(obs._max_z_in_m),
@@ -111,17 +112,19 @@ struct MeasurementReading
     _marking(obs._marking),
     _clearing(obs._clearing),
     _decay_acceleration(obs._decay_acceleration),
-    _model_type(obs._model_type)
+    _model_type(obs._model_type),
+    _stamp_in_seconds(obs._stamp_in_seconds)
   {
   }
 
-  geometry_msgs::msg::Point _origin;
-  geometry_msgs::msg::Quaternion _orientation;
-  std::shared_ptr < sensor_msgs::msg::PointCloud2 > _cloud;
+  stvl::core::Point _origin;
+  stvl::core::Quaternion _orientation;
+  std::shared_ptr<stvl::core::PointCloud> _cloud;
   double _obstacle_range_in_m, _min_z_in_m, _max_z_in_m;
   double _vertical_fov_in_rad, _vertical_fov_padding_in_m, _horizontal_fov_in_rad;
   double _marking, _clearing, _decay_acceleration;
   ModelType _model_type;
+  double _stamp_in_seconds{0.0};
 };
 
 }  // namespace observation

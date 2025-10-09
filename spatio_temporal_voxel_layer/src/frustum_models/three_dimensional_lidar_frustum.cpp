@@ -117,7 +117,7 @@ bool ThreeDimensionalLidarFrustum::IsInside(const openvdb::Vec3d & pt)
 
 /*****************************************************************************/
 void ThreeDimensionalLidarFrustum::SetPosition(
-  const geometry_msgs::msg::Point & origin)
+  const stvl::core::Point & origin)
 /*****************************************************************************/
 {
   _position = Eigen::Vector3d(origin.x, origin.y, origin.z);
@@ -125,7 +125,7 @@ void ThreeDimensionalLidarFrustum::SetPosition(
 
 /*****************************************************************************/
 void ThreeDimensionalLidarFrustum::SetOrientation(
-  const geometry_msgs::msg::Quaternion & quat)
+  const stvl::core::Quaternion & quat)
 /*****************************************************************************/
 {
   _orientation = Eigen::Quaterniond(quat.w, quat.x, quat.y, quat.z);

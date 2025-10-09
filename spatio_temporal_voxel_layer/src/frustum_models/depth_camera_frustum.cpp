@@ -304,7 +304,7 @@ bool DepthCameraFrustum::IsInside(const openvdb::Vec3d & pt)
 }
 
 /*****************************************************************************/
-void DepthCameraFrustum::SetPosition(const geometry_msgs::msg::Point & origin)
+void DepthCameraFrustum::SetPosition(const stvl::core::Point & origin)
 /*****************************************************************************/
 {
   _position = Eigen::Vector3d(origin.x, origin.y, origin.z);
@@ -312,7 +312,7 @@ void DepthCameraFrustum::SetPosition(const geometry_msgs::msg::Point & origin)
 
 /*****************************************************************************/
 void DepthCameraFrustum::SetOrientation(
-  const geometry_msgs::msg::Quaternion & quat)
+  const stvl::core::Quaternion & quat)
 /*****************************************************************************/
 {
   _orientation = Eigen::Quaterniond(quat.w, quat.x, quat.y, quat.z);

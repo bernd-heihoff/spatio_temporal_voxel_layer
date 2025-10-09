@@ -43,18 +43,11 @@
 #include <vector>
 #include <cassert>
 // Eigen
-#include "Eigen/Geometry"
+#include <Eigen/Geometry>
 // OpenVDB
-#include "openvdb/openvdb.h"
-// msgs
-#include "geometry_msgs/msg/point.hpp"
-#include "visualization_msgs/msg/marker.hpp"
-#include "visualization_msgs/msg/marker_array.hpp"
-#include "geometry_msgs/msg/quaternion.hpp"
-#include "geometry_msgs/msg/point_stamped.hpp"
-#include "geometry_msgs/msg/pose.hpp"
-// ROS
-#include "rclcpp/rclcpp.hpp"
+#include <openvdb/openvdb.h>
+
+#include "spatio_temporal_voxel_layer/core/types.hpp"
 
 namespace geometry
 {
@@ -103,16 +96,12 @@ public:
   virtual bool IsInside(const openvdb::Vec3d & pt) = 0;
 
   // set pose of depth camera in global space
-  virtual void SetPosition(const geometry_msgs::msg::Point & origin) = 0;
-  virtual void SetOrientation(const geometry_msgs::msg::Quaternion & quat) = 0;
+  virtual void SetPosition(const stvl::core::Point & origin) = 0;
+  virtual void SetOrientation(const stvl::core::Quaternion & quat) = 0;
 
   // transform model to the current coordinates
   virtual void TransformModel(void) = 0;
 
-private:
-  Eigen::Vector3d _position;
-  Eigen::Quaterniond _orientation;
-  bool _valid_frustum;
 };
 
 }  // namespace geometry

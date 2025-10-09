@@ -66,8 +66,8 @@ public:
   virtual bool IsInside(const openvdb::Vec3d & pt);
 
   // set pose of depth camera in global space
-  virtual void SetPosition(const geometry_msgs::msg::Point & origin);
-  virtual void SetOrientation(const geometry_msgs::msg::Quaternion & quat);
+  virtual void SetPosition(const stvl::core::Point & origin) override;
+  virtual void SetOrientation(const stvl::core::Quaternion & quat) override;
 
 private:
   // utils to find useful frustum metadata
@@ -83,8 +83,6 @@ private:
 
   #if VISUALIZE_FRUSTUM
   std::vector<Eigen::Vector3d> _frustum_pts;
-  rclcpp::Node::SharedPtr _node;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr _frustum_pub;
   #endif
 };
 

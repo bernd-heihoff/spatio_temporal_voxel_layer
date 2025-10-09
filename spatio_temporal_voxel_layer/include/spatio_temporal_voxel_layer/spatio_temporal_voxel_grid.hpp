@@ -52,23 +52,18 @@
 #include <string>
 #include <limits>
 #include <cstdint>
+#include <functional>
 // PCL
 #include "pcl/common/transforms.h"
 #include "pcl/PCLPointCloud2.h"
-// ROS
-#include "rclcpp/rclcpp.hpp"
-#include "rclcpp_lifecycle/lifecycle_node.hpp"
-// msgs
-#include "sensor_msgs/msg/point_cloud2.hpp"
-#include "sensor_msgs/point_cloud2_iterator.hpp"
-#include "visualization_msgs/msg/marker.hpp"
-#include "geometry_msgs/msg/point.hpp"
-#include "geometry_msgs/msg/point32.hpp"
 // OpenVDB
 #include "openvdb/openvdb.h"
 #include "openvdb/tools/GridTransformer.h"
 #include "openvdb/math/BBox.h"
 #include "openvdb/tools/RayIntersector.h"
+
+#include "spatio_temporal_voxel_layer/core/types.hpp"
+#include "spatio_temporal_voxel_layer/measurement_reading.h"
 
 // measurement struct and buffer
 #include "spatio_temporal_voxel_layer/measurement_buffer.hpp"
@@ -172,8 +167,10 @@ public:
   typedef openvdb::math::Ray<openvdb::Real> GridRay;
   typedef openvdb::math::Ray<openvdb::Real>::Vec3T Vec3Type;
 
+  using TimeSource = std::function<double()>;
+
   SpatioTemporalVoxelGrid(
-    rclcpp::Clock::SharedPtr clock,
+    TimeSource time_source,
     const float & voxel_size, const double & background_value,
     const int & decay_model, const double & voxel_decay,
     const bool & pub_voxels);
@@ -187,8 +184,8 @@ public:
     OccupanyCellSet & cleared_cells);
 
   // Get the pointcloud of the underlying occupancy grid
-  void GetOccupancyPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
-  void GetElevationPointCloud(std::unique_ptr<sensor_msgs::msg::PointCloud2> & pc2);
+  void GetOccupancyPointCloud(stvl::core::PointCloud & cloud);
+  void GetElevationPointCloud(stvl::core::PointCloud & cloud);
   ColumnElevationMap * GetColumnElevationMap();
   OccupanyCellSet * GetTouchedColumns();
 
@@ -226,13 +223,13 @@ protected:
   openvdb::Vec3d WorldToIndex(const openvdb::Vec3d & coord) const;
   openvdb::Vec3d IndexToWorld(const openvdb::Coord & coord) const;
 
-  rclcpp::Clock::SharedPtr _clock;
+  TimeSource time_source_;
 
   mutable openvdb::DoubleGrid::Ptr _grid;
   int _decay_model;
   double _background_value, _voxel_size, _voxel_decay;
   bool _pub_voxels;
-  std::unique_ptr<std::vector<geometry_msgs::msg::Point32>> _grid_points;
+  std::unique_ptr<stvl::core::PointCloud> grid_points_;
   ColumnElevationMap _column_elevations;
   OccupanyCellSet _touched_columns;
   boost::mutex _grid_lock;
