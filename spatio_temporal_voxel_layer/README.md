@@ -10,11 +10,16 @@ layer focused on orchestration.
   when to clip the voxel grid to a bounding box.  The class tracks the pruning
   configuration, robot motion thresholds, and the last computed bounding box so
   it can be unit-tested in isolation.
-- `spatio_temporal_voxel_layer.cpp` – now delegates pruning decisions to the
-  manager, which reduces the file size and simplifies future refactors for
-  other subsystems (observation buffers, elevation updates, etc.).
+- `internal/observation_manager.[hpp|cpp]` – centralizes all sensor observation
+  bookkeeping (measurement buffers, subscribers, and static observations) so
+  the layer no longer needs to manually juggle parallel vectors or keep track
+  of service lifetimes.
+- `spatio_temporal_voxel_layer.cpp` – now delegates pruning and observation
+  management to internal helpers, cutting down the file size and laying the
+  groundwork for additional refactors (e.g., observation lifecycle tests).
 - `test/pruning_manager_test.cpp` – gtests covering the pruning heuristics and
-  bounding box generation.
+  bounding box generation. Observation manager tests are a planned follow-up
+  once lightweight buffer fixtures are in place.
 
 ## Running the tests
 

@@ -53,6 +53,7 @@
 #include <limits>
 // voxel grid
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
+#include "spatio_temporal_voxel_layer/internal/observation_manager.hpp"
 #include "spatio_temporal_voxel_layer/internal/pruning_manager.hpp"
 // ROS
 #include "rclcpp/rclcpp.hpp"
@@ -81,12 +82,6 @@
 
 namespace spatio_temporal_voxel_layer
 {
-
-// conveniences for line lengths
-typedef std::vector<
-  std::shared_ptr<message_filters::SubscriberBase<rclcpp_lifecycle::LifecycleNode>>
-  >::iterator observation_subscribers_iter;
-typedef std::vector<std::shared_ptr<buffer::MeasurementBuffer>>::iterator observation_buffers_iter;
 
 // Core ROS voxel layer class
 class SpatioTemporalVoxelLayer : public nav2_costmap_2d::CostmapLayer
@@ -177,13 +172,7 @@ private:
     dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
 
   laser_geometry::LaserProjection _laser_projector;
-  std::vector<std::shared_ptr<message_filters::SubscriberBase<rclcpp_lifecycle::LifecycleNode>>>
-    _observation_subscribers;
-  std::vector<std::shared_ptr<tf2_ros::MessageFilterBase>> _observation_notifiers;
-  std::vector<std::shared_ptr<buffer::MeasurementBuffer>> _observation_buffers;
-  std::vector<std::shared_ptr<buffer::MeasurementBuffer>> _marking_buffers;
-  std::vector<std::shared_ptr<buffer::MeasurementBuffer>> _clearing_buffers;
-  std::vector<rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr> _buffer_enabler_servers;
+  std::unique_ptr<internal::ObservationManager> _observation_manager;
 
   bool _publish_voxels, _publish_elevation_map, _mapping_mode, was_reset_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _voxel_pub;
@@ -201,7 +190,6 @@ private:
   double _max_elevation_above_robot_base{std::numeric_limits<double>::infinity()};
   bool _limit_elevation{false};
   std::vector<geometry_msgs::msg::Point> _transformed_footprint;
-  std::vector<observation::MeasurementReading> _static_observations;
   std::unique_ptr<volume_grid::SpatioTemporalVoxelGrid> _voxel_grid;
   boost::recursive_mutex _voxel_grid_lock;
 
