@@ -24,6 +24,7 @@ find_package(laser_geometry REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
@@ -54,10 +55,8 @@ if(NOT "${PCL_LIBRARIES}" STREQUAL "")
     "vtkRenderingQt")
 endif()
 
-set(dependencies
-  nav2_costmap_2d
+set(core_dependencies
   geometry_msgs
-  pluginlib
   sensor_msgs
   std_msgs
   std_srvs
@@ -65,6 +64,7 @@ set(dependencies
   message_filters
   pcl_conversions
   rclcpp
+  rclcpp_lifecycle
   tf2_ros
   tf2_geometry_msgs
   tf2_sensor_msgs
@@ -73,7 +73,11 @@ set(dependencies
   openvdb_vendor
 )
 
-set(library_name spatio_temporal_voxel_layer_core)
+set(plugin_dependencies
+  nav2_costmap_2d
+  pluginlib
+  ${core_dependencies}
+)
 
 add_definitions(${EIGEN3_DEFINITIONS})
 
@@ -93,29 +97,50 @@ include_directories(
     ${nav2_costmap_2d_INCLUDE_DIRS}
 )
 
-add_library(${library_name} SHARED
-            src/spatio_temporal_voxel_layer.cpp
-            src/spatio_temporal_voxel_grid.cpp
-            src/measurement_buffer.cpp
-            src/internal/observation_manager.cpp
-            src/internal/pruning_manager.cpp
-            src/frustum_models/depth_camera_frustum.cpp
-            src/frustum_models/three_dimensional_lidar_frustum.cpp
-            src/vdb2pc.cpp
+set(stvl_core_sources
+  src/spatio_temporal_voxel_grid.cpp
+  src/measurement_buffer.cpp
+  src/internal/pruning_manager.cpp
+  src/frustum_models/depth_camera_frustum.cpp
+  src/frustum_models/three_dimensional_lidar_frustum.cpp
 )
 
-target_link_libraries(${library_name} "${cpp_typesupport_target}")
-target_compile_definitions(${library_name} PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
+add_library(stvl_core SHARED ${stvl_core_sources})
 
-target_link_libraries(${library_name}
+target_link_libraries(stvl_core
   ${Boost_LIBRARIES}
   ${EIGEN3_LIBRARIES}
   ${PCL_LIBRARIES}
   OpenVDB::openvdb
+)
+
+ament_target_dependencies(stvl_core ${core_dependencies})
+
+set(stvl_plugin_sources
+  src/spatio_temporal_voxel_layer.cpp
+  src/internal/observation_manager.cpp
+)
+
+add_library(stvl_plugin SHARED ${stvl_plugin_sources})
+
+target_link_libraries(stvl_plugin
+  stvl_core
+  "${cpp_typesupport_target}"
   ${nav2_costmap_2d_LIBRARIES}
 )
 
-ament_target_dependencies(${library_name} ${dependencies})
+target_compile_definitions(stvl_plugin PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
+
+ament_target_dependencies(stvl_plugin ${plugin_dependencies})
+
+add_library(stvl_vdb2pc SHARED src/vdb2pc.cpp)
+
+target_link_libraries(stvl_vdb2pc
+  ${PCL_LIBRARIES}
+  OpenVDB::openvdb
+)
+
+ament_target_dependencies(stvl_vdb2pc openvdb_vendor)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -124,12 +149,12 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(pruning_manager_test test/pruning_manager_test.cpp)
   if(TARGET pruning_manager_test)
-    target_link_libraries(pruning_manager_test ${library_name})
-    ament_target_dependencies(pruning_manager_test ${dependencies})
+    target_link_libraries(pruning_manager_test stvl_core)
+    ament_target_dependencies(pruning_manager_test ${core_dependencies})
   endif()
 endif()
 
-install(TARGETS ${library_name}
+install(TARGETS stvl_core stvl_plugin stvl_vdb2pc
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -146,5 +171,5 @@ install(FILES costmap_plugins.xml
 ament_export_dependencies(rosidl_default_runtime)
 pluginlib_export_plugin_description_file(nav2_costmap_2d costmap_plugins.xml)
 ament_export_include_directories(include)
-ament_export_libraries(${library_name})
+ament_export_libraries(stvl_core stvl_plugin stvl_vdb2pc)
 ament_package()
