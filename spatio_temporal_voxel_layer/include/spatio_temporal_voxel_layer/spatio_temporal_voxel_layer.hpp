@@ -150,7 +150,6 @@ private:
     const std::shared_ptr<buffer::MeasurementBuffer> & buffer);
 
   bool getRobotBaseHeight(double & base_z);
-  void filterElevationPointCloud(sensor_msgs::msg::PointCloud2 & cloud, double base_z) const;
 
   // Functions for adding static obstacle zones
   bool AddStaticObservations(const observation::MeasurementReading & obs);

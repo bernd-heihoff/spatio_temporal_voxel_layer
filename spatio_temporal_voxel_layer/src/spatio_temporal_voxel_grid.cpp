@@ -359,28 +359,35 @@ void SpatioTemporalVoxelGrid::GetOccupancyPointCloud(
 
 /*****************************************************************************/
 void SpatioTemporalVoxelGrid::GetElevationPointCloud(
-  stvl::core::PointCloud & cloud)
+  stvl::core::PointCloud & cloud, bool limit, double max_world_z)
 /*****************************************************************************/
 {
-  size_t populated_columns = 0U;
-  for (const auto & entry : _column_elevations) {
-    if (!entry.second.empty()) {
-      ++populated_columns;
-    }
-  }
-
   cloud.clear();
-  cloud.reserve(populated_columns);
+  cloud.reserve(_column_elevations.size());
 
   for (const auto & entry : _column_elevations) {
-    if (entry.second.empty()) {
+    const auto & column = entry.second;
+    if (column.empty()) {
+      continue;
+    }
+
+    double elevation = column.elevation_m;
+    if (limit) {
+      int32_t limited_index = ColumnElevation::NO_DATA;
+      double limited_height = std::numeric_limits<double>::quiet_NaN();
+      if (!column.highestBelow(max_world_z, limited_index, limited_height)) {
+        continue;
+      }
+      static_cast<void>(limited_index);
+      elevation = limited_height;
+    } else if (std::isnan(elevation)) {
       continue;
     }
 
     cloud.push_back(pcl::PointXYZ(
         static_cast<float>(entry.first.x),
         static_cast<float>(entry.first.y),
-        static_cast<float>(entry.second.elevation_m)));
+        static_cast<float>(elevation)));
   }
 }
 

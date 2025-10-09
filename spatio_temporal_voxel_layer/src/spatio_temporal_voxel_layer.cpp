@@ -53,7 +53,6 @@
 #include "spatio_temporal_voxel_layer/bridge/point_cloud_conversions.hpp"
 #include "openvdb/math/BBox.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
-#include "sensor_msgs/point_cloud2_iterator.hpp"
 
 namespace spatio_temporal_voxel_layer
 {
@@ -826,7 +825,8 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   Costmap2D::resetMaps();
 
   double base_z = 0.0;
-  bool limit_elevation = _limit_elevation;
+  bool limit_elevation = _limit_elevation && std::isfinite(_max_elevation_above_robot_base);
+  double elevation_ceiling = std::numeric_limits<double>::quiet_NaN();
   if (limit_elevation) {
     if (!getRobotBaseHeight(base_z)) {
       auto node = node_.lock();
@@ -841,6 +841,8 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
           "Disabling elevation limit; failed to obtain base height.");
       }
       limit_elevation = false;
+    } else {
+      elevation_ceiling = base_z + _max_elevation_above_robot_base;
     }
   }
 
@@ -881,15 +883,22 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
         const bool passes_threshold = !(_mark_threshold > 0 &&
           static_cast<int>(column.point_count) < _mark_threshold);
 
-        bool within_limit = true;
-        if (limit_elevation && passes_threshold && !std::isnan(column.elevation_m)) {
-          within_limit = (column.elevation_m - base_z) <= _max_elevation_above_robot_base;
-        }
-
-        if (!column.empty() && passes_threshold && within_limit) {
-          _elevation_layer[index] = column.elevation_index;
-          _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
-          new_active_indices.push_back(index);
+        if (!column.empty() && passes_threshold) {
+          if (limit_elevation) {
+            int32_t limited_index = volume_grid::ColumnElevation::NO_DATA;
+            double limited_height = std::numeric_limits<double>::quiet_NaN();
+            if (!std::isnan(elevation_ceiling) &&
+              column.highestBelow(elevation_ceiling, limited_index, limited_height))
+            {
+              _elevation_layer[index] = limited_index;
+              _elevation_layer_m[index] = static_cast<float>(limited_height);
+              new_active_indices.push_back(index);
+            }
+          } else if (!std::isnan(column.elevation_m)) {
+            _elevation_layer[index] = column.elevation_index;
+            _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
+            new_active_indices.push_back(index);
+          }
         }
       }
 
@@ -1015,15 +1024,21 @@ void SpatioTemporalVoxelLayer::updateBounds(
   }
 
   if (_publish_elevation_map && !_mapping_mode && _elevation_pub) {
-    stvl::core::PointCloud elevation_cloud;
-    _voxel_grid->GetElevationPointCloud(elevation_cloud);
-    auto elevation_msg = stvl::bridge::toPointCloud2(elevation_cloud, _global_frame, node->now());
-    if (_limit_elevation) {
+    double elevation_ceiling = std::numeric_limits<double>::quiet_NaN();
+    bool limit_elevation = _limit_elevation &&
+      std::isfinite(_max_elevation_above_robot_base);
+    if (limit_elevation) {
       double elevation_base_z = 0.0;
       if (getRobotBaseHeight(elevation_base_z)) {
-        filterElevationPointCloud(elevation_msg, elevation_base_z);
+        elevation_ceiling = elevation_base_z + _max_elevation_above_robot_base;
+      } else {
+        limit_elevation = false;
       }
     }
+
+    stvl::core::PointCloud elevation_cloud;
+    _voxel_grid->GetElevationPointCloud(elevation_cloud, limit_elevation, elevation_ceiling);
+    auto elevation_msg = stvl::bridge::toPointCloud2(elevation_cloud, _global_frame, node->now());
     _elevation_pub->publish(elevation_msg);
   }
 
@@ -1058,55 +1073,6 @@ bool SpatioTemporalVoxelLayer::getRobotBaseHeight(double & base_z)
   }
 
   return false;
-}
-
-void SpatioTemporalVoxelLayer::filterElevationPointCloud(
-  sensor_msgs::msg::PointCloud2 & cloud, double base_z) const
-{
-  if (!_limit_elevation || !std::isfinite(_max_elevation_above_robot_base) || cloud.width == 0U) {
-    return;
-  }
-
-  std::vector<std::array<float, 3>> filtered_points;
-  filtered_points.reserve(static_cast<size_t>(cloud.width));
-
-  sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
-  sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
-
-  for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
-    const float x = *iter_x;
-    const float y = *iter_y;
-    const float z = *iter_z;
-    if (!std::isfinite(z)) {
-      continue;
-    }
-
-    const double relative_height = static_cast<double>(z) - base_z;
-    if (relative_height <= _max_elevation_above_robot_base) {
-      filtered_points.push_back({x, y, z});
-    }
-  }
-
-  if (filtered_points.size() == cloud.width) {
-    return;
-  }
-
-  sensor_msgs::PointCloud2Modifier modifier(cloud);
-  modifier.resize(filtered_points.size());
-
-  sensor_msgs::PointCloud2Iterator<float> out_x(cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> out_y(cloud, "y");
-  sensor_msgs::PointCloud2Iterator<float> out_z(cloud, "z");
-
-  for (const auto & point : filtered_points) {
-    *out_x = point[0];
-    ++out_x;
-    *out_y = point[1];
-    ++out_y;
-    *out_z = point[2];
-    ++out_z;
-  }
 }
 
 void SpatioTemporalVoxelLayer::SaveGridCallback(

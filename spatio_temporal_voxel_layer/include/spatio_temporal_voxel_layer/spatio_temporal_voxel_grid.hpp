@@ -107,6 +107,7 @@ struct ColumnElevation
     elevation_index = NO_DATA;
     point_count = 0U;
     elevation_m = std::numeric_limits<double>::quiet_NaN();
+    samples.clear();
   }
 
   bool empty() const
@@ -116,6 +117,7 @@ struct ColumnElevation
 
   void updateWithMeasurement(int32_t new_index, double world_z)
   {
+    samples.push_back({new_index, world_z});
     if (empty() || new_index > elevation_index ||
       (new_index == elevation_index && world_z > elevation_m))
     {
@@ -125,9 +127,38 @@ struct ColumnElevation
     ++point_count;
   }
 
+  bool highestBelow(double limit, int32_t & out_index, double & out_world_z) const
+  {
+    double best_world_z = std::numeric_limits<double>::lowest();
+    int32_t best_index = NO_DATA;
+    bool found = false;
+
+    for (const auto & sample : samples) {
+      if (sample.world_z <= limit && sample.world_z > best_world_z) {
+        best_world_z = sample.world_z;
+        best_index = sample.index;
+        found = true;
+      }
+    }
+
+    if (found) {
+      out_index = best_index;
+      out_world_z = best_world_z;
+      return true;
+    }
+
+    return false;
+  }
+
   int32_t elevation_index{NO_DATA};
   uint32_t point_count{0U};
   double elevation_m{std::numeric_limits<double>::quiet_NaN()};
+  struct Sample
+  {
+    int32_t index;
+    double world_z;
+  };
+  std::vector<Sample> samples;
 };
 
 struct OccupanyCellHash
@@ -184,7 +215,8 @@ public:
 
   // Get the pointcloud of the underlying occupancy grid
   void GetOccupancyPointCloud(stvl::core::PointCloud & cloud);
-  void GetElevationPointCloud(stvl::core::PointCloud & cloud);
+  void GetElevationPointCloud(
+    stvl::core::PointCloud & cloud, bool limit, double max_world_z);
   ColumnElevationMap * GetColumnElevationMap();
   OccupanyCellSet * GetTouchedColumns();
 
