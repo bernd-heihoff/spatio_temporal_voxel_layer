@@ -297,7 +297,7 @@ void SpatioTemporalVoxelGrid::operator()(
 
       double x = *iter_x < 0 ? *iter_x - _voxel_size : *iter_x;
       double y = *iter_y < 0 ? *iter_y - _voxel_size : *iter_y;
-      double z = *iter_y < 0 ? *iter_z - _voxel_size : *iter_z;
+      double z = *iter_z < 0 ? *iter_z - _voxel_size : *iter_z;
 
       openvdb::Vec3d mark_grid(this->WorldToIndex(
           openvdb::Vec3d(x, y, z)));
@@ -464,7 +464,7 @@ void SpatioTemporalVoxelGrid::ResetGridArea(
     const bool in_y_range = pose_world.y() > start.y && pose_world.y() < end.y;
     const bool in_range = in_x_range && in_y_range;
 
-    if(in_range == invert_area)
+    if(in_range != invert_area)
     {
       ClearGridPoint(pt_index);
     }
