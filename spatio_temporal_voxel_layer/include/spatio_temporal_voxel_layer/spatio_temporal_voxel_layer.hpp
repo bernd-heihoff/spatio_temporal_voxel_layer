@@ -152,6 +152,9 @@ private:
     sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
     const std::shared_ptr<buffer::MeasurementBuffer> & buffer);
 
+  bool getRobotBaseHeight(double & base_z);
+  void filterElevationPointCloud(sensor_msgs::msg::PointCloud2 & cloud, double base_z) const;
+
   // Functions for adding static obstacle zones
   bool AddStaticObservations(const observation::MeasurementReading & obs);
   bool RemoveStaticObservations(void);
@@ -198,6 +201,8 @@ private:
   rclcpp::Time _last_prune_time;
   double _last_prune_origin_x, _last_prune_origin_y;
   std::string _prune_robot_base_frame;
+  double _max_elevation_above_robot_base{std::numeric_limits<double>::infinity()};
+  bool _limit_elevation{false};
   std::vector<geometry_msgs::msg::Point> _transformed_footprint;
   std::vector<observation::MeasurementReading> _static_observations;
   std::unique_ptr<volume_grid::SpatioTemporalVoxelGrid> _voxel_grid;

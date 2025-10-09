@@ -37,6 +37,7 @@
  *                         stevenmacenski@gmail.com
  *********************************************************************/
 
+#include <array>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -137,6 +138,17 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   // if mapping, how often to save a map for safety
   declareParameter("map_save_duration", rclcpp::ParameterValue(60.0));
   node->get_parameter(name_ + ".map_save_duration", map_save_time);
+
+  double max_elevation_above_robot_base = -1.0;
+  declareParameter("max_elevation_above_robot_base", rclcpp::ParameterValue(max_elevation_above_robot_base));
+  node->get_parameter(name_ + ".max_elevation_above_robot_base", max_elevation_above_robot_base);
+  if (max_elevation_above_robot_base > 0.0) {
+    _max_elevation_above_robot_base = max_elevation_above_robot_base;
+    _limit_elevation = true;
+  } else {
+    _max_elevation_above_robot_base = std::numeric_limits<double>::infinity();
+    _limit_elevation = false;
+  }
 
   declareParameter("prune_enabled", rclcpp::ParameterValue(false));
   node->get_parameter(name_ + ".prune_enabled", _prune_enabled);
@@ -859,6 +871,25 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   // grabs map of occupied cells from grid and adds to costmap_
   Costmap2D::resetMaps();
 
+  double base_z = 0.0;
+  bool limit_elevation = _limit_elevation;
+  if (limit_elevation) {
+    if (!getRobotBaseHeight(base_z)) {
+      auto node = node_.lock();
+      if (node) {
+        RCLCPP_WARN(
+          logger_,
+          "%s disabling elevation limit; failed to obtain base height.",
+          getName().c_str());
+      } else {
+        RCLCPP_WARN(
+          logger_,
+          "Disabling elevation limit; failed to obtain base height.");
+      }
+      limit_elevation = false;
+    }
+  }
+
   if (_elevation_layer.size() !=
     static_cast<size_t>(getSizeInCellsX()) * static_cast<size_t>(getSizeInCellsY()))
   {
@@ -893,9 +924,15 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
       const auto column_it = column_map->find(cell);
       if (column_it != column_map->end()) {
         const auto & column = column_it->second;
-        if (!column.empty() &&
-          !(_mark_threshold > 0 && static_cast<int>(column.point_count) < _mark_threshold))
-        {
+        const bool passes_threshold = !(_mark_threshold > 0 &&
+          static_cast<int>(column.point_count) < _mark_threshold);
+
+        bool within_limit = true;
+        if (limit_elevation && passes_threshold && !std::isnan(column.elevation_m)) {
+          within_limit = (column.elevation_m - base_z) <= _max_elevation_above_robot_base;
+        }
+
+        if (!column.empty() && passes_threshold && within_limit) {
           _elevation_layer[index] = column.elevation_index;
           _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
           new_active_indices.push_back(index);
@@ -1017,6 +1054,12 @@ void SpatioTemporalVoxelLayer::updateBounds(
     std::unique_ptr<sensor_msgs::msg::PointCloud2> elevation_pc2 =
       std::make_unique<sensor_msgs::msg::PointCloud2>();
     _voxel_grid->GetElevationPointCloud(elevation_pc2);
+    if (_limit_elevation) {
+      double elevation_base_z = 0.0;
+      if (getRobotBaseHeight(elevation_base_z)) {
+        filterElevationPointCloud(*elevation_pc2, elevation_base_z);
+      }
+    }
     elevation_pc2->header.frame_id = _global_frame;
     elevation_pc2->header.stamp = node->now();
     _elevation_pub->publish(*elevation_pc2);
@@ -1027,6 +1070,83 @@ void SpatioTemporalVoxelLayer::updateBounds(
 }
 
 /*****************************************************************************/
+bool SpatioTemporalVoxelLayer::getRobotBaseHeight(double & base_z)
+{
+  if (_prune_robot_base_frame.empty() || !tf_) {
+    return false;
+  }
+
+  try {
+    const geometry_msgs::msg::TransformStamped base_in_global = tf_->lookupTransform(
+      _global_frame, _prune_robot_base_frame, tf2::TimePointZero);
+    base_z = static_cast<double>(base_in_global.transform.translation.z);
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    auto node = node_.lock();
+    if (node) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *node->get_clock(), 2000,
+        "%s failed to lookup robot base height: %s",
+        getName().c_str(), ex.what());
+    } else {
+      RCLCPP_WARN(
+        logger_, "%s failed to lookup robot base height: %s",
+        getName().c_str(), ex.what());
+    }
+  }
+
+  return false;
+}
+
+void SpatioTemporalVoxelLayer::filterElevationPointCloud(
+  sensor_msgs::msg::PointCloud2 & cloud, double base_z) const
+{
+  if (!_limit_elevation || !std::isfinite(_max_elevation_above_robot_base) || cloud.width == 0U) {
+    return;
+  }
+
+  std::vector<std::array<float, 3>> filtered_points;
+  filtered_points.reserve(static_cast<size_t>(cloud.width));
+
+  sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
+
+  for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+    const float x = *iter_x;
+    const float y = *iter_y;
+    const float z = *iter_z;
+    if (!std::isfinite(z)) {
+      continue;
+    }
+
+    const double relative_height = static_cast<double>(z) - base_z;
+    if (relative_height <= _max_elevation_above_robot_base) {
+      filtered_points.push_back({x, y, z});
+    }
+  }
+
+  if (filtered_points.size() == cloud.width) {
+    return;
+  }
+
+  sensor_msgs::PointCloud2Modifier modifier(cloud);
+  modifier.resize(filtered_points.size());
+
+  sensor_msgs::PointCloud2Iterator<float> out_x(cloud, "x");
+  sensor_msgs::PointCloud2Iterator<float> out_y(cloud, "y");
+  sensor_msgs::PointCloud2Iterator<float> out_z(cloud, "z");
+
+  for (const auto & point : filtered_points) {
+    *out_x = point[0];
+    ++out_x;
+    *out_y = point[1];
+    ++out_y;
+    *out_z = point[2];
+    ++out_z;
+  }
+}
+
 void SpatioTemporalVoxelLayer::SaveGridCallback(
   const std::shared_ptr<rmw_request_id_t>/*header*/,
   const std::shared_ptr<spatio_temporal_voxel_layer::srv::SaveGrid::Request> req,
@@ -1155,6 +1275,15 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           if (_prune_z_min == _prune_z_max) {
             _prune_z_min -= _voxel_size;
             _prune_z_max += _voxel_size;
+          }
+        } else if (name == name_ + "." + "max_elevation_above_robot_base") {
+          const double value = parameter.as_double();
+          if (value > 0.0) {
+            _max_elevation_above_robot_base = value;
+            _limit_elevation = true;
+          } else {
+            _max_elevation_above_robot_base = std::numeric_limits<double>::infinity();
+            _limit_elevation = false;
           }
         }
       }
