@@ -47,6 +47,7 @@
 
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_layer.hpp"
 #include "openvdb/math/BBox.h"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 namespace spatio_temporal_voxel_layer
 {
@@ -158,6 +159,7 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   }
   _prune_interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
 
+  // Vertical limits are treated as offsets from the robot base link when pruning is executed.
   declareParameter("prune_z_min", rclcpp::ParameterValue(-1.0e6));
   declareParameter("prune_z_max", rclcpp::ParameterValue(1.0e6));
   node->get_parameter(name_ + ".prune_z_min", _prune_z_min);
@@ -170,6 +172,15 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   if (_prune_z_min == _prune_z_max) {
     _prune_z_min -= _voxel_size;
     _prune_z_max += _voxel_size;
+  }
+
+  declareParameter("prune_robot_base_frame", rclcpp::ParameterValue(std::string("base_link")));
+  node->get_parameter(name_ + ".prune_robot_base_frame", _prune_robot_base_frame);
+  if (_prune_robot_base_frame.empty()) {
+    RCLCPP_WARN(
+      logger_, "%s prune_robot_base_frame is empty, defaulting to base_link.",
+      getName().c_str());
+    _prune_robot_base_frame = "base_link";
   }
 
   RCLCPP_INFO(
@@ -791,7 +802,33 @@ void SpatioTemporalVoxelLayer::PruneVoxelGridIfNeeded(const rclcpp::Time & now)
   const double min_y = origin_y - _prune_padding;
   const double max_y = origin_y + getSizeInMetersY() + _prune_padding;
 
-  if (!(min_x < max_x && min_y < max_y && _prune_z_min < _prune_z_max)) {
+  double min_z = _prune_z_min;
+  double max_z = _prune_z_max;
+
+  const std::string base_frame = _prune_robot_base_frame;
+  if (!base_frame.empty()) {
+    try {
+      const geometry_msgs::msg::TransformStamped base_in_global = tf_->lookupTransform(
+        _global_frame, base_frame, tf2::TimePointZero);
+      const double robot_z = static_cast<double>(base_in_global.transform.translation.z);
+      min_z = robot_z + _prune_z_min;
+      max_z = robot_z + _prune_z_max;
+    } catch (const tf2::TransformException & ex) {
+      auto node = node_.lock();
+      if (node) {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *node->get_clock(), 2000,
+          "%s failed to center prune bounding box on robot: %s",
+          getName().c_str(), ex.what());
+      } else {
+        RCLCPP_WARN(
+          logger_, "%s failed to center prune bounding box on robot: %s",
+          getName().c_str(), ex.what());
+      }
+    }
+  }
+
+  if (!(min_x < max_x && min_y < max_y && min_z < max_z)) {
     _last_prune_time = now;
     _last_prune_origin_x = origin_x;
     _last_prune_origin_y = origin_y;
@@ -799,8 +836,8 @@ void SpatioTemporalVoxelLayer::PruneVoxelGridIfNeeded(const rclcpp::Time & now)
   }
 
   const openvdb::BBoxd bbox(
-    openvdb::Vec3d(min_x, min_y, _prune_z_min),
-    openvdb::Vec3d(max_x, max_y, _prune_z_max));
+    openvdb::Vec3d(min_x, min_y, min_z),
+    openvdb::Vec3d(max_x, max_y, max_z));
 
   if (_voxel_grid->ClipToBoundingBox(bbox)) {
     _last_prune_time = now;
@@ -1167,6 +1204,22 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
     if (type == ParameterType::PARAMETER_INTEGER) {
       if (name == name_ + "." + "mark_threshold") {
         _mark_threshold = parameter.as_int();
+      }
+    }
+
+    if (type == ParameterType::PARAMETER_STRING) {
+      if (name == name_ + "." + "prune_robot_base_frame") {
+        const auto value = parameter.as_string();
+        if (value.empty()) {
+          auto node = node_.lock();
+          if (node) {
+            RCLCPP_WARN(
+              logger_, "%s prune_robot_base_frame cannot be empty, keeping previous value %s.",
+              getName().c_str(), _prune_robot_base_frame.c_str());
+          }
+        } else {
+          _prune_robot_base_frame = value;
+        }
       }
     }
   }

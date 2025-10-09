@@ -197,6 +197,7 @@ private:
   rclcpp::Duration _prune_interval;
   rclcpp::Time _last_prune_time;
   double _last_prune_origin_x, _last_prune_origin_y;
+  std::string _prune_robot_base_frame;
   std::vector<geometry_msgs::msg::Point> _transformed_footprint;
   std::vector<observation::MeasurementReading> _static_observations;
   std::unique_ptr<volume_grid::SpatioTemporalVoxelGrid> _voxel_grid;
