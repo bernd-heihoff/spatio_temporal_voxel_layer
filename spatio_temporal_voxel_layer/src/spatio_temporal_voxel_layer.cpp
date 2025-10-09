@@ -60,11 +60,6 @@ using rcl_interfaces::msg::ParameterType;
 
 /*****************************************************************************/
 SpatioTemporalVoxelLayer::SpatioTemporalVoxelLayer(void)
-:
-  _prune_distance(0.0),
-  _prune_interval(0, 0),
-  _last_prune_origin_x(std::numeric_limits<double>::quiet_NaN()),
-  _last_prune_origin_y(std::numeric_limits<double>::quiet_NaN())
 /*****************************************************************************/
 {
 }
@@ -151,15 +146,15 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
   }
 
   declareParameter("prune_enabled", rclcpp::ParameterValue(false));
-  node->get_parameter(name_ + ".prune_enabled", _prune_enabled);
+  node->get_parameter(name_ + ".prune_enabled", _pruning_config.enabled);
 
   declareParameter("prune_padding", rclcpp::ParameterValue(0.5));
-  node->get_parameter(name_ + ".prune_padding", _prune_padding);
-  _prune_padding = std::max(0.0, _prune_padding);
+  node->get_parameter(name_ + ".prune_padding", _pruning_config.padding);
+  _pruning_config.padding = std::max(0.0, _pruning_config.padding);
 
   declareParameter("prune_distance", rclcpp::ParameterValue(0.0));
-  node->get_parameter(name_ + ".prune_distance", _prune_distance);
-  _prune_distance = std::max(0.0, _prune_distance);
+  node->get_parameter(name_ + ".prune_distance", _pruning_config.distance);
+  _pruning_config.distance = std::max(0.0, _pruning_config.distance);
 
   double prune_interval_seconds = 0.5;
   declareParameter("prune_interval", rclcpp::ParameterValue(prune_interval_seconds));
@@ -169,31 +164,34 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
       logger_, "%s prune_interval must be non-negative, clamping to 0.0", getName().c_str());
     prune_interval_seconds = 0.0;
   }
-  _prune_interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
+  _pruning_config.interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
 
   // Vertical limits are treated as offsets from the robot base link when pruning is executed.
   declareParameter("prune_z_min", rclcpp::ParameterValue(-1.0e6));
   declareParameter("prune_z_max", rclcpp::ParameterValue(1.0e6));
-  node->get_parameter(name_ + ".prune_z_min", _prune_z_min);
-  node->get_parameter(name_ + ".prune_z_max", _prune_z_max);
-  if (_prune_z_min > _prune_z_max) {
+  node->get_parameter(name_ + ".prune_z_min", _pruning_config.z_min);
+  node->get_parameter(name_ + ".prune_z_max", _pruning_config.z_max);
+  if (_pruning_config.z_min > _pruning_config.z_max) {
     RCLCPP_WARN(
       logger_, "%s prune_z_min > prune_z_max, swapping values.", getName().c_str());
-    std::swap(_prune_z_min, _prune_z_max);
+    std::swap(_pruning_config.z_min, _pruning_config.z_max);
   }
-  if (_prune_z_min == _prune_z_max) {
-    _prune_z_min -= _voxel_size;
-    _prune_z_max += _voxel_size;
+  if (_pruning_config.z_min == _pruning_config.z_max) {
+    _pruning_config.z_min -= _voxel_size;
+    _pruning_config.z_max += _voxel_size;
   }
 
   declareParameter("prune_robot_base_frame", rclcpp::ParameterValue(std::string("base_link")));
-  node->get_parameter(name_ + ".prune_robot_base_frame", _prune_robot_base_frame);
-  if (_prune_robot_base_frame.empty()) {
+  node->get_parameter(name_ + ".prune_robot_base_frame", _pruning_config.base_frame);
+  if (_pruning_config.base_frame.empty()) {
     RCLCPP_WARN(
       logger_, "%s prune_robot_base_frame is empty, defaulting to base_link.",
       getName().c_str());
-    _prune_robot_base_frame = "base_link";
+    _pruning_config.base_frame = "base_link";
   }
+
+  _pruning_config.voxel_size = _voxel_size;
+  _pruning_config.mapping_mode = _mapping_mode;
 
   RCLCPP_INFO(
     logger_,
@@ -230,12 +228,13 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
     node->get_clock(), _voxel_size, static_cast<double>(default_value_), _decay_model,
     _voxel_decay, _publish_voxels);
 
-  _last_prune_time = node->now() - _prune_interval;
+  _pruning_manager = std::make_unique<internal::PruningManager>(tf_, _global_frame);
+  _pruning_manager->setConfig(_pruning_config);
+
+  const auto last_prune_time = node->now() - _pruning_config.interval;
+  _pruning_manager->resetState(last_prune_time, getOriginX(), getOriginY());
 
   matchSize();
-
-  _last_prune_origin_x = getOriginX();
-  _last_prune_origin_y = getOriginY();
 
   RCLCPP_INFO(logger_, "%s created underlying voxel grid.", getName().c_str());
 
@@ -782,87 +781,6 @@ void SpatioTemporalVoxelLayer::updateCosts(
 }
 
 /*****************************************************************************/
-void SpatioTemporalVoxelLayer::PruneVoxelGridIfNeeded(const rclcpp::Time & now)
-/*****************************************************************************/
-{
-  if (!_prune_enabled || _mapping_mode || !_voxel_grid) {
-    return;
-  }
-
-  const double origin_x = getOriginX();
-  const double origin_y = getOriginY();
-
-  const bool interval_elapsed = now >= _last_prune_time + _prune_interval;
-
-  bool moved_far_enough = false;
-  if (_prune_distance > 0.0) {
-    if (std::isfinite(_last_prune_origin_x) && std::isfinite(_last_prune_origin_y)) {
-      const double dx = origin_x - _last_prune_origin_x;
-      const double dy = origin_y - _last_prune_origin_y;
-      moved_far_enough = std::hypot(dx, dy) >= _prune_distance;
-    } else {
-      moved_far_enough = true;
-    }
-  }
-
-  if (!interval_elapsed && !moved_far_enough) {
-    return;
-  }
-
-  const double min_x = origin_x - _prune_padding;
-  const double max_x = origin_x + getSizeInMetersX() + _prune_padding;
-  const double min_y = origin_y - _prune_padding;
-  const double max_y = origin_y + getSizeInMetersY() + _prune_padding;
-
-  double min_z = _prune_z_min;
-  double max_z = _prune_z_max;
-
-  const std::string base_frame = _prune_robot_base_frame;
-  if (!base_frame.empty()) {
-    try {
-      const geometry_msgs::msg::TransformStamped base_in_global = tf_->lookupTransform(
-        _global_frame, base_frame, tf2::TimePointZero);
-      const double robot_z = static_cast<double>(base_in_global.transform.translation.z);
-      min_z = robot_z + _prune_z_min;
-      max_z = robot_z + _prune_z_max;
-    } catch (const tf2::TransformException & ex) {
-      auto node = node_.lock();
-      if (node) {
-        RCLCPP_WARN_THROTTLE(
-          logger_, *node->get_clock(), 2000,
-          "%s failed to center prune bounding box on robot: %s",
-          getName().c_str(), ex.what());
-      } else {
-        RCLCPP_WARN(
-          logger_, "%s failed to center prune bounding box on robot: %s",
-          getName().c_str(), ex.what());
-      }
-    }
-  }
-
-  if (!(min_x < max_x && min_y < max_y && min_z < max_z)) {
-    _last_prune_time = now;
-    _last_prune_origin_x = origin_x;
-    _last_prune_origin_y = origin_y;
-    return;
-  }
-
-  const openvdb::BBoxd bbox(
-    openvdb::Vec3d(min_x, min_y, min_z),
-    openvdb::Vec3d(max_x, max_y, max_z));
-
-  if (_voxel_grid->ClipToBoundingBox(bbox)) {
-    _last_prune_time = now;
-    _last_prune_origin_x = origin_x;
-    _last_prune_origin_y = origin_y;
-  } else {
-    _last_prune_time = now;
-    _last_prune_origin_x = origin_x;
-    _last_prune_origin_y = origin_y;
-  }
-}
-
-/*****************************************************************************/
 void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   double * min_x, double * min_y, double * max_x, double * max_y,
   volume_grid::OccupanyCellSet & cleared_cells)
@@ -996,7 +914,19 @@ void SpatioTemporalVoxelLayer::updateBounds(
       robot_y - getSizeInMetersY() / 2);
   }
 
-  PruneVoxelGridIfNeeded(node->now());
+  if (_pruning_manager && _voxel_grid) {
+    _pruning_config.mapping_mode = _mapping_mode;
+    _pruning_manager->setConfig(_pruning_config);
+
+    internal::PruningContext context;
+    context.origin_x = getOriginX();
+    context.origin_y = getOriginY();
+    context.size_x = getSizeInMetersX();
+    context.size_y = getSizeInMetersY();
+    context.global_frame = _global_frame;
+
+    _pruning_manager->pruneIfNeeded(context, node->now(), *_voxel_grid, logger_);
+  }
 
   useExtraBounds(min_x, min_y, max_x, max_y);
 
@@ -1072,13 +1002,13 @@ void SpatioTemporalVoxelLayer::updateBounds(
 /*****************************************************************************/
 bool SpatioTemporalVoxelLayer::getRobotBaseHeight(double & base_z)
 {
-  if (_prune_robot_base_frame.empty() || !tf_) {
+  if (_pruning_config.base_frame.empty() || !tf_) {
     return false;
   }
 
   try {
     const geometry_msgs::msg::TransformStamped base_in_global = tf_->lookupTransform(
-      _global_frame, _prune_robot_base_frame, tf2::TimePointZero);
+      _global_frame, _pruning_config.base_frame, tf2::TimePointZero);
     base_z = static_cast<double>(base_in_global.transform.translation.z);
     return true;
   } catch (const tf2::TransformException & ex) {
@@ -1242,40 +1172,54 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
       }
 
       if (type == ParameterType::PARAMETER_DOUBLE) {
+        bool pruning_updated = false;
+
         if (name == name_ + "." + "prune_padding") {
-          _prune_padding = std::max(0.0, parameter.as_double());
+          _pruning_config.padding = std::max(0.0, parameter.as_double());
+          pruning_updated = true;
         } else if (name == name_ + "." + "prune_distance") {
-          _prune_distance = std::max(0.0, parameter.as_double());
-          _last_prune_origin_x = getOriginX();
-          _last_prune_origin_y = getOriginY();
+          _pruning_config.distance = std::max(0.0, parameter.as_double());
+          if (_pruning_manager) {
+            _pruning_manager->updateLastOrigin(getOriginX(), getOriginY());
+          }
+          pruning_updated = true;
         } else if (name == name_ + "." + "prune_interval") {
           double prune_interval_seconds = parameter.as_double();
           if (prune_interval_seconds < 0.0) {
             prune_interval_seconds = 0.0;
           }
-          _prune_interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
-          auto node = node_.lock();
-          if (node) {
-            _last_prune_time = node->now() - _prune_interval;
+          _pruning_config.interval = rclcpp::Duration::from_seconds(prune_interval_seconds);
+          if (_pruning_manager) {
+            auto node = node_.lock();
+            if (node) {
+              _pruning_manager->updateLastPruneTime(node->now() - _pruning_config.interval);
+            }
           }
+          pruning_updated = true;
         } else if (name == name_ + "." + "prune_z_min") {
-          _prune_z_min = parameter.as_double();
-          if (_prune_z_min > _prune_z_max) {
-            std::swap(_prune_z_min, _prune_z_max);
+          _pruning_config.z_min = parameter.as_double();
+          if (_pruning_config.z_min > _pruning_config.z_max) {
+            RCLCPP_WARN(
+              logger_, "%s prune_z_min > prune_z_max, swapping values.", getName().c_str());
+            std::swap(_pruning_config.z_min, _pruning_config.z_max);
           }
-          if (_prune_z_min == _prune_z_max) {
-            _prune_z_min -= _voxel_size;
-            _prune_z_max += _voxel_size;
+          if (_pruning_config.z_min == _pruning_config.z_max) {
+            _pruning_config.z_min -= _voxel_size;
+            _pruning_config.z_max += _voxel_size;
           }
+          pruning_updated = true;
         } else if (name == name_ + "." + "prune_z_max") {
-          _prune_z_max = parameter.as_double();
-          if (_prune_z_min > _prune_z_max) {
-            std::swap(_prune_z_min, _prune_z_max);
+          _pruning_config.z_max = parameter.as_double();
+          if (_pruning_config.z_min > _pruning_config.z_max) {
+            RCLCPP_WARN(
+              logger_, "%s prune_z_min > prune_z_max, swapping values.", getName().c_str());
+            std::swap(_pruning_config.z_min, _pruning_config.z_max);
           }
-          if (_prune_z_min == _prune_z_max) {
-            _prune_z_min -= _voxel_size;
-            _prune_z_max += _voxel_size;
+          if (_pruning_config.z_min == _pruning_config.z_max) {
+            _pruning_config.z_min -= _voxel_size;
+            _pruning_config.z_max += _voxel_size;
           }
+          pruning_updated = true;
         } else if (name == name_ + "." + "max_elevation_above_robot_base") {
           const double value = parameter.as_double();
           if (value > 0.0) {
@@ -1285,6 +1229,10 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
             _max_elevation_above_robot_base = std::numeric_limits<double>::infinity();
             _limit_elevation = false;
           }
+        }
+
+        if (pruning_updated && _pruning_manager) {
+          _pruning_manager->setConfig(_pruning_config);
         }
       }
     }
@@ -1318,10 +1266,13 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
         }
         enabled_ = enable;
       } else if (name == name_ + "." + "prune_enabled") {
-        _prune_enabled = parameter.as_bool();
-        auto node = node_.lock();
-        if (node) {
-          _last_prune_time = node->now() - _prune_interval;
+        _pruning_config.enabled = parameter.as_bool();
+        if (_pruning_manager) {
+          _pruning_manager->setConfig(_pruning_config);
+          auto node = node_.lock();
+          if (node) {
+            _pruning_manager->updateLastPruneTime(node->now() - _pruning_config.interval);
+          }
         }
       } else if (name == name_ + "." + "publish_voxel_map") {
         _publish_voxels = parameter.as_bool();
@@ -1344,10 +1295,13 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           if (node) {
             RCLCPP_WARN(
               logger_, "%s prune_robot_base_frame cannot be empty, keeping previous value %s.",
-              getName().c_str(), _prune_robot_base_frame.c_str());
+              getName().c_str(), _pruning_config.base_frame.c_str());
           }
         } else {
-          _prune_robot_base_frame = value;
+          _pruning_config.base_frame = value;
+          if (_pruning_manager) {
+            _pruning_manager->setConfig(_pruning_config);
+          }
         }
       }
     }

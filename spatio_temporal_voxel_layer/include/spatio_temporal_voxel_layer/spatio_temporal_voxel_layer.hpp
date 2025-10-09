@@ -53,6 +53,7 @@
 #include <limits>
 // voxel grid
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
+#include "spatio_temporal_voxel_layer/internal/pruning_manager.hpp"
 // ROS
 #include "rclcpp/rclcpp.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
@@ -195,12 +196,8 @@ private:
   int _combination_method, _mark_threshold;
   volume_grid::GlobalDecayModel _decay_model;
   bool _update_footprint_enabled, _enabled;
-  bool _prune_enabled;
-  double _prune_padding, _prune_distance, _prune_z_min, _prune_z_max;
-  rclcpp::Duration _prune_interval;
-  rclcpp::Time _last_prune_time;
-  double _last_prune_origin_x, _last_prune_origin_y;
-  std::string _prune_robot_base_frame;
+  internal::PruningConfig _pruning_config;
+  std::unique_ptr<internal::PruningManager> _pruning_manager;
   double _max_elevation_above_robot_base{std::numeric_limits<double>::infinity()};
   bool _limit_elevation{false};
   std::vector<geometry_msgs::msg::Point> _transformed_footprint;
@@ -219,7 +216,6 @@ private:
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;
 
-  void PruneVoxelGridIfNeeded(const rclcpp::Time & now);
 };
 
 }  // namespace spatio_temporal_voxel_layer

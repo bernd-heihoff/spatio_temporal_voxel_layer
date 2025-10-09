@@ -97,6 +97,7 @@ add_library(${library_name} SHARED
             src/spatio_temporal_voxel_layer.cpp
             src/spatio_temporal_voxel_grid.cpp
             src/measurement_buffer.cpp
+            src/internal/pruning_manager.cpp
             src/frustum_models/depth_camera_frustum.cpp
             src/frustum_models/three_dimensional_lidar_frustum.cpp
             src/vdb2pc.cpp
@@ -118,6 +119,13 @@ ament_target_dependencies(${library_name} ${dependencies})
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(pruning_manager_test test/pruning_manager_test.cpp)
+  if(TARGET pruning_manager_test)
+    target_link_libraries(pruning_manager_test ${library_name})
+    ament_target_dependencies(pruning_manager_test ${dependencies})
+  endif()
 endif()
 
 install(TARGETS ${library_name}
