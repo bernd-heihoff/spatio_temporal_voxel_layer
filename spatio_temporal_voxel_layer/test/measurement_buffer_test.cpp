@@ -65,44 +65,54 @@ protected:
     tf_buffer_.reset();
   }
 
+  buffer::MeasurementBufferBuilder makeBaseBuilder() const
+  {
+    buffer::MeasurementBufferBuilder builder;
+    builder
+      .setSourceName("depth_camera")
+      .setTopicName("depth_camera/points")
+      .setObservationKeepTime(10.0)
+      .setExpectedUpdateRate(0.0)
+      .setMinObstacleHeight(0.0)
+      .setMaxObstacleHeight(3.0)
+      .setObstacleRange(5.0)
+      .setTfBuffer(tf_buffer_.get())
+      .setGlobalFrame("map")
+      .setSensorFrame("camera_link")
+      .setTfTolerance(0.1)
+      .setMinZ(0.1)
+      .setMaxZ(5.0)
+      .setVerticalFov(1.0)
+      .setVerticalFovPadding(0.0)
+      .setHorizontalFov(0.0)
+      .setDecayAcceleration(0.0)
+      .setVoxelSize(0.05)
+      .setFilter(buffer::Filters::NONE)
+      .setVoxelMinPoints(0)
+      .setEnabled(true)
+      .setClearBufferAfterReading(false)
+      .setModelType(ModelType::DEPTH_CAMERA)
+      .setClock(clock_)
+      .setLogger(rclcpp::get_logger("measurement_buffer_test"));
+    return builder;
+  }
+
   std::shared_ptr<rclcpp::Clock> clock_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
 };
 
 TEST_F(MeasurementBufferFixture, BuffersCloudWithMetadata)
 {
-  buffer::MeasurementBuffer buffer(
-    "depth_camera",
-    "depth_camera/points",
-    10.0,
-    0.0,
-    0.0,
-    3.0,
-    5.0,
-    *tf_buffer_,
-    "map",
-    "camera_link",
-    0.1,
-    0.1,
-    5.0,
-    1.0,
-    0.0,
-    0.0,
-  0.0,
-    true,
-    true,
-    0.05,
-    buffer::Filters::NONE,
-    0,
-    true,
-    false,
-    ModelType::DEPTH_CAMERA,
-    clock_,
-    rclcpp::get_logger("measurement_buffer_test"));
-
   const auto stamp = clock_->now();
   auto transform = makeIdentityTransform("map", "camera_link", stamp);
   tf_buffer_->setTransform(transform, "test_authority", true);
+
+  auto config = makeBaseBuilder()
+    .setObservationKeepTime(10.0)
+    .setMarking(true)
+    .setClearing(true)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
 
   const auto cloud = makeTestCloud("camera_link", stamp);
 
@@ -130,34 +140,12 @@ TEST_F(MeasurementBufferFixture, BuffersCloudWithMetadata)
 
 TEST_F(MeasurementBufferFixture, RemovesStaleObservations)
 {
-  buffer::MeasurementBuffer buffer(
-    "depth_camera",
-    "depth_camera/points",
-    0.01,
-    0.0,
-    0.0,
-    3.0,
-    5.0,
-    *tf_buffer_,
-    "map",
-    "camera_link",
-    0.1,
-    0.1,
-    5.0,
-    1.0,
-    0.0,
-    0.0,
-  0.0,
-    true,
-    false,
-    0.05,
-    buffer::Filters::NONE,
-    0,
-    true,
-    false,
-    ModelType::DEPTH_CAMERA,
-    clock_,
-    rclcpp::get_logger("measurement_buffer_test"));
+  auto config = makeBaseBuilder()
+    .setObservationKeepTime(0.01)
+    .setMarking(true)
+    .setClearing(false)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
 
   auto stamp = clock_->now();
   auto transform = makeIdentityTransform("map", "camera_link", stamp);

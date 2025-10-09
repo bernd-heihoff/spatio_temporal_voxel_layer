@@ -80,38 +80,216 @@ enum class Filters
 typedef std::list<observation::MeasurementReading>::iterator readings_iter;
 typedef std::unique_ptr<sensor_msgs::msg::PointCloud2> point_cloud_ptr;
 
+struct MeasurementBufferConfig
+{
+  std::string source_name;
+  std::string topic_name;
+  double observation_keep_time{0.0};
+  double expected_update_rate{0.0};
+  double min_obstacle_height{0.0};
+  double max_obstacle_height{0.0};
+  double obstacle_range{0.0};
+  tf2_ros::Buffer * tf_buffer{nullptr};
+  std::string global_frame;
+  std::string sensor_frame;
+  double tf_tolerance{0.0};
+  double min_z{0.0};
+  double max_z{0.0};
+  double vertical_fov{0.0};
+  double vertical_fov_padding{0.0};
+  double horizontal_fov{0.0};
+  double decay_acceleration{0.0};
+  bool marking{true};
+  bool clearing{false};
+  double voxel_size{0.0};
+  Filters filter{Filters::NONE};
+  int voxel_min_points{0};
+  bool enabled{true};
+  bool clear_buffer_after_reading{false};
+  ModelType model_type{ModelType::DEPTH_CAMERA};
+  rclcpp::Clock::SharedPtr clock{nullptr};
+  rclcpp::Logger logger{rclcpp::get_logger("measurement_buffer")};
+};
+
+class MeasurementBufferBuilder
+{
+public:
+  MeasurementBufferBuilder & setSourceName(const std::string & value)
+  {
+    config_.source_name = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setTopicName(const std::string & value)
+  {
+    config_.topic_name = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setObservationKeepTime(double value)
+  {
+    config_.observation_keep_time = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setExpectedUpdateRate(double value)
+  {
+    config_.expected_update_rate = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setMinObstacleHeight(double value)
+  {
+    config_.min_obstacle_height = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setMaxObstacleHeight(double value)
+  {
+    config_.max_obstacle_height = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setObstacleRange(double value)
+  {
+    config_.obstacle_range = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setTfBuffer(tf2_ros::Buffer * value)
+  {
+    config_.tf_buffer = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setGlobalFrame(const std::string & value)
+  {
+    config_.global_frame = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setSensorFrame(const std::string & value)
+  {
+    config_.sensor_frame = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setTfTolerance(double value)
+  {
+    config_.tf_tolerance = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setMinZ(double value)
+  {
+    config_.min_z = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setMaxZ(double value)
+  {
+    config_.max_z = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setVerticalFov(double value)
+  {
+    config_.vertical_fov = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setVerticalFovPadding(double value)
+  {
+    config_.vertical_fov_padding = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setHorizontalFov(double value)
+  {
+    config_.horizontal_fov = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setDecayAcceleration(double value)
+  {
+    config_.decay_acceleration = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setMarking(bool value)
+  {
+    config_.marking = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setClearing(bool value)
+  {
+    config_.clearing = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setVoxelSize(double value)
+  {
+    config_.voxel_size = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setFilter(Filters value)
+  {
+    config_.filter = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setVoxelMinPoints(int value)
+  {
+    config_.voxel_min_points = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setEnabled(bool value)
+  {
+    config_.enabled = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setClearBufferAfterReading(bool value)
+  {
+    config_.clear_buffer_after_reading = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setModelType(ModelType value)
+  {
+    config_.model_type = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setClock(const rclcpp::Clock::SharedPtr & clock)
+  {
+    config_.clock = clock;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setLogger(const rclcpp::Logger & logger)
+  {
+    config_.logger = logger;
+    return *this;
+  }
+
+  MeasurementBufferConfig build() const
+  {
+    return config_;
+  }
+
+private:
+  MeasurementBufferConfig config_;
+};
+
 // Measurement buffer
 class MeasurementBuffer
 {
 public:
-  MeasurementBuffer(
-    const std::string & source_name,
-    const std::string & topic_name,
-    const double & observation_keep_time,
-    const double & expected_update_rate,
-    const double & min_obstacle_height,
-    const double & max_obstacle_height,
-    const double & obstacle_range,
-    tf2_ros::Buffer & tf,
-    const std::string & global_frame,
-    const std::string & sensor_frame,
-    const double & tf_tolerance,
-    const double & min_d,
-    const double & max_d,
-    const double & vFOV,
-    const double & vFOVPadding,
-    const double & hFOV,
-    const double & decay_acceleration,
-    const bool & marking,
-    const bool & clearing,
-    const double & voxel_size,
-    const Filters & filter,
-    const int & voxel_min_points,
-    const bool & enabled,
-    const bool & clear_buffer_after_reading,
-    const ModelType & model_type,
-    rclcpp::Clock::SharedPtr clock,
-    rclcpp::Logger logger);
+  explicit MeasurementBuffer(const MeasurementBufferConfig & config);
 
   ~MeasurementBuffer(void);
 

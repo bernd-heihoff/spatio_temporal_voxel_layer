@@ -39,6 +39,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <stdexcept>
 #include "spatio_temporal_voxel_layer/bridge/measurement_buffer.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -46,39 +47,57 @@
 namespace buffer
 {
 
+namespace
+{
+
+tf2_ros::Buffer & requireTfBuffer(tf2_ros::Buffer * buffer)
+{
+  if (!buffer) {
+    throw std::invalid_argument("MeasurementBuffer requires non-null tf buffer");
+  }
+  return *buffer;
+}
+
+}
+
 using namespace std::chrono_literals;
 
 /*****************************************************************************/
-MeasurementBuffer::MeasurementBuffer(
-  const std::string & source_name,
-  const std::string & topic_name,
-  const double & observation_keep_time, const double & expected_update_rate,
-  const double & min_obstacle_height, const double & max_obstacle_height,
-  const double & obstacle_range, tf2_ros::Buffer & tf, const std::string & global_frame,
-  const std::string & sensor_frame, const double & tf_tolerance,
-  const double & min_d, const double & max_d, const double & vFOV,
-  const double & vFOVPadding, const double & hFOV,
-  const double & decay_acceleration, const bool & marking,
-  const bool & clearing, const double & voxel_size, const Filters & filter,
-  const int & voxel_min_points, const bool & enabled,
-  const bool & clear_buffer_after_reading, const ModelType & model_type,
-  rclcpp::Clock::SharedPtr clock, rclcpp::Logger logger)
-: _buffer(tf),
-  _observation_keep_time(rclcpp::Duration::from_seconds(observation_keep_time)),
-  _expected_update_rate(rclcpp::Duration::from_seconds(expected_update_rate)),
-  _last_updated(clock->now()),
-  _global_frame(global_frame), _sensor_frame(sensor_frame), _source_name(source_name),
-  _topic_name(topic_name), _min_obstacle_height(min_obstacle_height),
-  _max_obstacle_height(max_obstacle_height), _obstacle_range(obstacle_range),
-  _tf_tolerance(tf_tolerance), _min_z(min_d), _max_z(max_d),
-  _vertical_fov(vFOV), _vertical_fov_padding(vFOVPadding),
-  _horizontal_fov(hFOV), _decay_acceleration(decay_acceleration),
-  _voxel_size(voxel_size), _marking(marking), _clearing(clearing),
-  _filter(filter), _voxel_min_points(voxel_min_points),
-  _clear_buffer_after_reading(clear_buffer_after_reading),
-  _enabled(enabled), _model_type(model_type), clock_(clock), logger_(logger)
+MeasurementBuffer::MeasurementBuffer(const MeasurementBufferConfig & config)
+: _buffer(requireTfBuffer(config.tf_buffer)),
+  _observation_keep_time(rclcpp::Duration::from_seconds(config.observation_keep_time)),
+  _expected_update_rate(rclcpp::Duration::from_seconds(config.expected_update_rate)),
+  _last_updated(rclcpp::Time(0, 0, RCL_STEADY_TIME)),
+  _global_frame(config.global_frame),
+  _sensor_frame(config.sensor_frame),
+  _source_name(config.source_name),
+  _topic_name(config.topic_name),
+  _min_obstacle_height(config.min_obstacle_height),
+  _max_obstacle_height(config.max_obstacle_height),
+  _obstacle_range(config.obstacle_range),
+  _tf_tolerance(config.tf_tolerance),
+  _min_z(config.min_z),
+  _max_z(config.max_z),
+  _vertical_fov(config.vertical_fov),
+  _vertical_fov_padding(config.vertical_fov_padding),
+  _horizontal_fov(config.horizontal_fov),
+  _decay_acceleration(config.decay_acceleration),
+  _voxel_size(config.voxel_size),
+  _marking(config.marking),
+  _clearing(config.clearing),
+  _filter(config.filter),
+  _voxel_min_points(config.voxel_min_points),
+  _clear_buffer_after_reading(config.clear_buffer_after_reading),
+  _enabled(config.enabled),
+  _model_type(config.model_type),
+  clock_(config.clock),
+  logger_(config.logger)
 /*****************************************************************************/
 {
+  if (!clock_) {
+    throw std::invalid_argument("MeasurementBuffer requires non-null clock");
+  }
+  _last_updated = clock_->now();
 }
 
 /*****************************************************************************/

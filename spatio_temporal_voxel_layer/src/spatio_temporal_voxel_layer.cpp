@@ -345,14 +345,37 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
               "Only topics that use pointclouds or laser scans are supported.");
     }
 
-    auto buffer = std::make_shared<buffer::MeasurementBuffer>(
-      source, topic,
-      observation_keep_time, expected_update_rate, min_obstacle_height,
-      max_obstacle_height, obstacle_range, *tf_, _global_frame, sensor_frame,
-      transform_tolerance, min_z, max_z, vFOV, vFOVPadding, hFOV,
-      decay_acceleration, marking, clearing, _voxel_size,
-      filter, voxel_min_points, enabled, clear_after_reading, model_type,
-      node->get_clock(), node->get_logger());
+    auto buffer_config = buffer::MeasurementBufferBuilder{}
+      .setSourceName(source)
+      .setTopicName(topic)
+      .setObservationKeepTime(observation_keep_time)
+      .setExpectedUpdateRate(expected_update_rate)
+      .setMinObstacleHeight(min_obstacle_height)
+      .setMaxObstacleHeight(max_obstacle_height)
+      .setObstacleRange(obstacle_range)
+  .setTfBuffer(tf_)
+      .setGlobalFrame(_global_frame)
+      .setSensorFrame(sensor_frame)
+      .setTfTolerance(transform_tolerance)
+      .setMinZ(min_z)
+      .setMaxZ(max_z)
+      .setVerticalFov(vFOV)
+      .setVerticalFovPadding(vFOVPadding)
+      .setHorizontalFov(hFOV)
+      .setDecayAcceleration(decay_acceleration)
+      .setMarking(marking)
+      .setClearing(clearing)
+      .setVoxelSize(_voxel_size)
+      .setFilter(filter)
+      .setVoxelMinPoints(voxel_min_points)
+      .setEnabled(enabled)
+      .setClearBufferAfterReading(clear_after_reading)
+      .setModelType(model_type)
+      .setClock(node->get_clock())
+      .setLogger(node->get_logger())
+      .build();
+
+    auto buffer = std::make_shared<buffer::MeasurementBuffer>(buffer_config);
 
     if (_observation_manager) {
       _observation_manager->registerBuffer(buffer, marking, clearing);
