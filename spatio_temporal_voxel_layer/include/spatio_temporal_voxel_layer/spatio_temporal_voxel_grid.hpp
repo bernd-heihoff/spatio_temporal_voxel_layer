@@ -122,8 +122,8 @@ struct ColumnElevation
 
   void updateWithMeasurement(int32_t new_index, double world_z)
   {
-    if (empty() || new_index < elevation_index ||
-      (new_index == elevation_index && world_z < elevation_m))
+    if (empty() || new_index > elevation_index ||
+      (new_index == elevation_index && world_z > elevation_m))
     {
       elevation_index = new_index;
       elevation_m = world_z;
