@@ -6,20 +6,20 @@ layer focused on orchestration.
 
 ## Module layout
 
-- `internal/pruning_manager.[hpp|cpp]` – encapsulates the logic that decides
-  when to clip the voxel grid to a bounding box.  The class tracks the pruning
-  configuration, robot motion thresholds, and the last computed bounding box so
-  it can be unit-tested in isolation.
-- `internal/observation_manager.[hpp|cpp]` – centralizes all sensor observation
-  bookkeeping (measurement buffers, subscribers, and static observations) so
-  the layer no longer needs to manually juggle parallel vectors or keep track
-  of service lifetimes.
-- `spatio_temporal_voxel_layer.cpp` – now delegates pruning and observation
-  management to internal helpers, cutting down the file size and laying the
-  groundwork for additional refactors (e.g., observation lifecycle tests).
-- `test/pruning_manager_test.cpp` – gtests covering the pruning heuristics and
-  bounding box generation. Observation manager tests are a planned follow-up
-  once lightweight buffer fixtures are in place.
+- `stvl_core` – ROS-neutral voxel grid logic living in
+  `spatio_temporal_voxel_grid.*` and the `core/` headers.  It owns OpenVDB
+  integration, occupancy elevation tracking, and the frustum models.
+- `stvl_bridge` – ROS 2 bridge hosting the observation ingestion pipeline in
+  `bridge/measurement_buffer.*` and the pruning heuristics in
+  `internal/pruning_manager.*`.  Helper utilities under `bridge/` (for example
+  `point_cloud_conversions.hpp`) concentrate ROS ↔ PCL conversions.
+- `stvl_plugin` – the Nav2 costmap plugin in `spatio_temporal_voxel_layer.cpp`
+  plus the `internal/observation_manager.*` orchestration layer.  It wires the
+  ROS lifecycle, parameters, and publishers/subscribers on top of the bridge.
+- `stvl_vdb2pc` – a small utility library in `vdb2pc.*` that converts archived
+  OpenVDB volumes into PCL point clouds.
+- Tests: `test/pruning_manager_test.cpp` exercises pruning decisions, while
+  `test/measurement_buffer_test.cpp` validates the measurement buffering flow.
 
 ## Running the tests
 
@@ -30,4 +30,5 @@ colcon build --packages-select spatio_temporal_voxel_layer
 colcon test --packages-select spatio_temporal_voxel_layer
 ```
 
-The new unit tests provide fast feedback when iterating on the pruning logic.
+The bridge-level tests provide fast feedback when iterating on the pruning and
+measurement buffering logic.

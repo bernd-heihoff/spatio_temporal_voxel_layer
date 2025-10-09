@@ -56,6 +56,10 @@ if(NOT "${PCL_LIBRARIES}" STREQUAL "")
 endif()
 
 set(core_dependencies
+  openvdb_vendor
+)
+
+set(bridge_dependencies
   geometry_msgs
   sensor_msgs
   std_msgs
@@ -70,13 +74,12 @@ set(core_dependencies
   tf2_sensor_msgs
   visualization_msgs
   builtin_interfaces
-  openvdb_vendor
 )
 
 set(plugin_dependencies
   nav2_costmap_2d
   pluginlib
-  ${core_dependencies}
+  ${bridge_dependencies}
 )
 
 add_definitions(${EIGEN3_DEFINITIONS})
@@ -99,8 +102,6 @@ include_directories(
 
 set(stvl_core_sources
   src/spatio_temporal_voxel_grid.cpp
-  src/measurement_buffer.cpp
-  src/internal/pruning_manager.cpp
   src/frustum_models/depth_camera_frustum.cpp
   src/frustum_models/three_dimensional_lidar_frustum.cpp
 )
@@ -121,10 +122,24 @@ set(stvl_plugin_sources
   src/internal/observation_manager.cpp
 )
 
+add_library(stvl_bridge SHARED
+  src/measurement_buffer.cpp
+  src/internal/pruning_manager.cpp
+)
+
+target_link_libraries(stvl_bridge
+  stvl_core
+  ${Boost_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
+
+ament_target_dependencies(stvl_bridge ${bridge_dependencies})
+
 add_library(stvl_plugin SHARED ${stvl_plugin_sources})
 
 target_link_libraries(stvl_plugin
   stvl_core
+  stvl_bridge
   "${cpp_typesupport_target}"
   ${nav2_costmap_2d_LIBRARIES}
 )
@@ -149,12 +164,18 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(pruning_manager_test test/pruning_manager_test.cpp)
   if(TARGET pruning_manager_test)
-    target_link_libraries(pruning_manager_test stvl_core)
-    ament_target_dependencies(pruning_manager_test ${core_dependencies})
+    target_link_libraries(pruning_manager_test stvl_bridge)
+    ament_target_dependencies(pruning_manager_test ${bridge_dependencies})
+  endif()
+
+  ament_add_gtest(measurement_buffer_test test/measurement_buffer_test.cpp)
+  if(TARGET measurement_buffer_test)
+    target_link_libraries(measurement_buffer_test stvl_bridge)
+    ament_target_dependencies(measurement_buffer_test ${bridge_dependencies})
   endif()
 endif()
 
-install(TARGETS stvl_core stvl_plugin stvl_vdb2pc
+install(TARGETS stvl_core stvl_bridge stvl_plugin stvl_vdb2pc
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -168,8 +189,8 @@ install(FILES costmap_plugins.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
-ament_export_dependencies(rosidl_default_runtime)
+ament_export_dependencies(rosidl_default_runtime ${plugin_dependencies})
 pluginlib_export_plugin_description_file(nav2_costmap_2d costmap_plugins.xml)
 ament_export_include_directories(include)
-ament_export_libraries(stvl_core stvl_plugin stvl_vdb2pc)
+ament_export_libraries(stvl_core stvl_bridge stvl_plugin stvl_vdb2pc)
 ament_package()

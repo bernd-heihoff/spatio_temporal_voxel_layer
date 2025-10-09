@@ -49,6 +49,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_layer.hpp"
+#include "spatio_temporal_voxel_layer/bridge/point_cloud_conversions.hpp"
 #include "openvdb/math/BBox.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
@@ -947,26 +948,20 @@ void SpatioTemporalVoxelLayer::updateBounds(
   if (_publish_voxels && !_mapping_mode) {
     stvl::core::PointCloud occupancy_cloud;
     _voxel_grid->GetOccupancyPointCloud(occupancy_cloud);
-    sensor_msgs::msg::PointCloud2 pc2_msg;
-    pcl::toROSMsg(occupancy_cloud, pc2_msg);
-    pc2_msg.header.frame_id = _global_frame;
-    pc2_msg.header.stamp = node->now();
+    const auto pc2_msg = stvl::bridge::toPointCloud2(occupancy_cloud, _global_frame, node->now());
     _voxel_pub->publish(pc2_msg);
   }
 
   if (_publish_elevation_map && !_mapping_mode && _elevation_pub) {
     stvl::core::PointCloud elevation_cloud;
     _voxel_grid->GetElevationPointCloud(elevation_cloud);
-    sensor_msgs::msg::PointCloud2 elevation_msg;
-    pcl::toROSMsg(elevation_cloud, elevation_msg);
+    auto elevation_msg = stvl::bridge::toPointCloud2(elevation_cloud, _global_frame, node->now());
     if (_limit_elevation) {
       double elevation_base_z = 0.0;
       if (getRobotBaseHeight(elevation_base_z)) {
         filterElevationPointCloud(elevation_msg, elevation_base_z);
       }
     }
-    elevation_msg.header.frame_id = _global_frame;
-    elevation_msg.header.stamp = node->now();
     _elevation_pub->publish(elevation_msg);
   }
 

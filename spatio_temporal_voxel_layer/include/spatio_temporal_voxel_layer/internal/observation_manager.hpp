@@ -21,7 +21,7 @@
 #include "std_srvs/srv/set_bool.hpp"
 #include "tf2_ros/message_filter.h"
 
-#include "spatio_temporal_voxel_layer/measurement_buffer.hpp"
+#include "spatio_temporal_voxel_layer/bridge/measurement_buffer.hpp"
 #include "spatio_temporal_voxel_layer/measurement_reading.h"
 
 namespace spatio_temporal_voxel_layer::internal
