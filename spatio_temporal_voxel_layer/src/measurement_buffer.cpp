@@ -113,6 +113,9 @@ void MeasurementBuffer::BufferROSCloud(
   const sensor_msgs::msg::PointCloud2 & cloud)
 /*****************************************************************************/
 {
+  const auto received_time = clock_->now();
+  last_received_time_ns_.store(received_time.nanoseconds(), std::memory_order_relaxed);
+
   const std::string origin_frame =
     _sensor_frame.empty() ? cloud.header.frame_id : _sensor_frame;
 
@@ -126,6 +129,11 @@ void MeasurementBuffer::BufferROSCloud(
     PopulateObservationMetadata(observation, global_pose, stamp_in_seconds);
 
     if (_clearing && !_marking) {
+      last_success_time_ns_.store(clock_->now().nanoseconds(), std::memory_order_relaxed);
+      {
+        std::lock_guard<std::mutex> lock(last_error_mutex_);
+        last_error_message_.clear();
+      }
       _last_updated = clock_->now();
       RemoveStaleObservations();
       return;
@@ -136,6 +144,12 @@ void MeasurementBuffer::BufferROSCloud(
     AssignPointCloud(observation, *global_cloud);
   } catch (const tf2::TransformException & ex) {
     _observation_list.pop_front();
+    last_error_time_ns_.store(clock_->now().nanoseconds(), std::memory_order_relaxed);
+    error_count_.fetch_add(1, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(last_error_mutex_);
+      last_error_message_ = ex.what();
+    }
     RCLCPP_ERROR(
       logger_,
       "TF Exception for sensor frame: %s, cloud frame: %s, %s",
@@ -143,6 +157,12 @@ void MeasurementBuffer::BufferROSCloud(
     return;
   } catch (const std::exception & ex) {
     _observation_list.pop_front();
+    last_error_time_ns_.store(clock_->now().nanoseconds(), std::memory_order_relaxed);
+    error_count_.fetch_add(1, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(last_error_mutex_);
+      last_error_message_ = ex.what();
+    }
     RCLCPP_ERROR(
       logger_,
       "Failed to buffer cloud for %s (%s): %s",
@@ -150,8 +170,70 @@ void MeasurementBuffer::BufferROSCloud(
     return;
   }
 
+  last_success_time_ns_.store(clock_->now().nanoseconds(), std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(last_error_mutex_);
+    last_error_message_.clear();
+  }
+
   _last_updated = clock_->now();
   RemoveStaleObservations();
+}
+
+/*****************************************************************************/
+std::string MeasurementBuffer::GetTopicName(void) const
+/*****************************************************************************/
+{
+  return _topic_name;
+}
+
+/*****************************************************************************/
+rclcpp::Time MeasurementBuffer::GetLastReceivedTime(void) const
+/*****************************************************************************/
+{
+  return rclcpp::Time(
+    last_received_time_ns_.load(std::memory_order_relaxed),
+    clock_ ? clock_->get_clock_type() : RCL_ROS_TIME);
+}
+
+/*****************************************************************************/
+rclcpp::Time MeasurementBuffer::GetLastSuccessfulBufferTime(void) const
+/*****************************************************************************/
+{
+  return rclcpp::Time(
+    last_success_time_ns_.load(std::memory_order_relaxed),
+    clock_ ? clock_->get_clock_type() : RCL_ROS_TIME);
+}
+
+/*****************************************************************************/
+rclcpp::Time MeasurementBuffer::GetLastErrorTime(void) const
+/*****************************************************************************/
+{
+  return rclcpp::Time(
+    last_error_time_ns_.load(std::memory_order_relaxed),
+    clock_ ? clock_->get_clock_type() : RCL_ROS_TIME);
+}
+
+/*****************************************************************************/
+uint64_t MeasurementBuffer::GetErrorCount(void) const
+/*****************************************************************************/
+{
+  return error_count_.load(std::memory_order_relaxed);
+}
+
+/*****************************************************************************/
+std::string MeasurementBuffer::GetLastErrorMessage(void) const
+/*****************************************************************************/
+{
+  std::lock_guard<std::mutex> lock(last_error_mutex_);
+  return last_error_message_;
+}
+
+/*****************************************************************************/
+double MeasurementBuffer::GetExpectedUpdateRateSeconds(void) const
+/*****************************************************************************/
+{
+  return _expected_update_rate.seconds();
 }
 
 /*****************************************************************************/

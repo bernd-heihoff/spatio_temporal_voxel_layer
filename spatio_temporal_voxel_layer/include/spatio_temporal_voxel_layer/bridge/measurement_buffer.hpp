@@ -40,11 +40,13 @@
 #define SPATIO_TEMPORAL_VOXEL_LAYER__BRIDGE__MEASUREMENT_BUFFER_HPP_
 
 // STL
+#include <atomic>
 #include <vector>
 #include <list>
 #include <string>
 #include <chrono>
 #include <memory>
+#include <mutex>
 // measurement structs
 #include "spatio_temporal_voxel_layer/measurement_reading.h"
 // PCL
@@ -320,6 +322,17 @@ public:
   // Source name getter
   std::string GetSourceName(void) const;
 
+  // Topic name getter
+  std::string GetTopicName(void) const;
+
+  // Heartbeat / health bookkeeping (wall time from the configured clock)
+  rclcpp::Time GetLastReceivedTime(void) const;
+  rclcpp::Time GetLastSuccessfulBufferTime(void) const;
+  rclcpp::Time GetLastErrorTime(void) const;
+  uint64_t GetErrorCount(void) const;
+  std::string GetLastErrorMessage(void) const;
+  double GetExpectedUpdateRateSeconds(void) const;
+
   // params setters
   void SetMinObstacleHeight(const double & min_obstacle_height);
   void SetMaxObstacleHeight(const double & max_obstacle_height);
@@ -381,6 +394,13 @@ private:
   ModelType _model_type;
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::Logger logger_;
+
+  std::atomic<int64_t> last_received_time_ns_{0};
+  std::atomic<int64_t> last_success_time_ns_{0};
+  std::atomic<int64_t> last_error_time_ns_{0};
+  std::atomic<uint64_t> error_count_{0};
+  mutable std::mutex last_error_mutex_;
+  std::string last_error_message_;
 };
 
 }  // namespace buffer

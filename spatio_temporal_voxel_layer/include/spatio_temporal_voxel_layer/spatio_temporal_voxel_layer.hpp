@@ -50,6 +50,9 @@
 #include <iostream>
 #include <memory>
 #include <unordered_set>
+#include <unordered_map>
+#include <atomic>
+#include <mutex>
 #include <limits>
 // voxel grid
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_grid.hpp"
@@ -72,6 +75,8 @@
 #include "geometry_msgs/msg/point.hpp"
 #include "spatio_temporal_voxel_layer/srv/save_grid.hpp"
 #include "std_srvs/srv/set_bool.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 // projector
 #include "laser_geometry/laser_geometry.hpp"
 // tf
@@ -149,6 +154,8 @@ private:
     sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
     const std::shared_ptr<buffer::MeasurementBuffer> & buffer);
 
+  void heartbeatTimerCallback();
+
   bool getRobotBaseHeight(double & base_z);
 
   // Functions for adding static obstacle zones
@@ -187,6 +194,7 @@ private:
     double min_obstacle_height{0.0};
     double max_obstacle_height{0.0};
     bool height_relative_to_base{false};
+    bool required_for_heartbeat{true};
     double obstacle_range{0.0};
     double min_z{0.0};
     double max_z{0.0};
@@ -260,6 +268,29 @@ private:
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;
+
+  // Heartbeat / health monitoring
+  bool publish_heartbeat_{false};
+  std::string heartbeat_topic_{"heartbeat"};
+  std::string heartbeat_status_topic_{"heartbeat_status"};
+  double heartbeat_period_s_{0.2};
+  double heartbeat_costmap_timeout_s_{1.0};
+  double heartbeat_default_sensor_timeout_s_{1.0};
+  double heartbeat_min_sensor_timeout_s_{0.2};
+  double heartbeat_expected_update_rate_multiplier_{2.5};
+  std::unordered_map<std::string, bool> heartbeat_required_sources_{};
+
+  rclcpp::TimerBase::SharedPtr heartbeat_timer_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr heartbeat_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_status_pub_;
+
+  std::atomic<int64_t> last_update_bounds_success_ns_{0};
+  std::atomic<int64_t> last_update_bounds_error_ns_{0};
+  std::atomic<int64_t> last_update_costs_success_ns_{0};
+  std::atomic<int64_t> last_update_costs_error_ns_{0};
+  mutable std::mutex heartbeat_error_mutex_;
+  std::string last_update_bounds_error_msg_;
+  std::string last_update_costs_error_msg_;
 
 };
 

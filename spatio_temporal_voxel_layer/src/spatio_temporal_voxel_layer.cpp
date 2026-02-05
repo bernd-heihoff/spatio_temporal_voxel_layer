@@ -117,6 +117,16 @@ void SpatioTemporalVoxelLayer::declareLayerParameters()
   declareParameter(
     "prune_robot_base_frame",
     rclcpp::ParameterValue(std::string("base_link")));
+
+  // Heartbeat / health monitoring (disabled by default)
+  declareParameter("publish_heartbeat", rclcpp::ParameterValue(false));
+  declareParameter("heartbeat_topic", rclcpp::ParameterValue(std::string("heartbeat")));
+  declareParameter("heartbeat_status_topic", rclcpp::ParameterValue(std::string("heartbeat_status")));
+  declareParameter("heartbeat_period", rclcpp::ParameterValue(0.2));
+  declareParameter("heartbeat_costmap_timeout", rclcpp::ParameterValue(1.0));
+  declareParameter("heartbeat_default_sensor_timeout", rclcpp::ParameterValue(1.0));
+  declareParameter("heartbeat_min_sensor_timeout", rclcpp::ParameterValue(0.2));
+  declareParameter("heartbeat_expected_update_rate_multiplier", rclcpp::ParameterValue(2.5));
 }
 
 /*****************************************************************************/
@@ -209,6 +219,23 @@ void SpatioTemporalVoxelLayer::loadLayerParameters(
 
   _pruning_config.voxel_size = _voxel_size;
   _pruning_config.mapping_mode = _mapping_mode;
+
+  node->get_parameter(name_ + ".publish_heartbeat", publish_heartbeat_);
+  node->get_parameter(name_ + ".heartbeat_topic", heartbeat_topic_);
+  node->get_parameter(name_ + ".heartbeat_status_topic", heartbeat_status_topic_);
+  node->get_parameter(name_ + ".heartbeat_period", heartbeat_period_s_);
+  node->get_parameter(name_ + ".heartbeat_costmap_timeout", heartbeat_costmap_timeout_s_);
+  node->get_parameter(name_ + ".heartbeat_default_sensor_timeout", heartbeat_default_sensor_timeout_s_);
+  node->get_parameter(name_ + ".heartbeat_min_sensor_timeout", heartbeat_min_sensor_timeout_s_);
+  node->get_parameter(
+    name_ + ".heartbeat_expected_update_rate_multiplier",
+    heartbeat_expected_update_rate_multiplier_);
+
+  heartbeat_period_s_ = std::max(0.05, heartbeat_period_s_);
+  heartbeat_costmap_timeout_s_ = std::max(heartbeat_period_s_, heartbeat_costmap_timeout_s_);
+  heartbeat_default_sensor_timeout_s_ = std::max(heartbeat_period_s_, heartbeat_default_sensor_timeout_s_);
+  heartbeat_min_sensor_timeout_s_ = std::max(0.0, heartbeat_min_sensor_timeout_s_);
+  heartbeat_expected_update_rate_multiplier_ = std::max(1.0, heartbeat_expected_update_rate_multiplier_);
 }
 
 /*****************************************************************************/
@@ -231,6 +258,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(3.0));
   declareParameter(source + "." + "height_relative_to_base", rclcpp::ParameterValue(false));
+  declareParameter(source + "." + "required_for_heartbeat", rclcpp::ParameterValue(true));
   declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
   declareParameter(source + "." + "marking", rclcpp::ParameterValue(true));
   declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
@@ -256,6 +284,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   node->get_parameter(name_ + "." + source + "." + "min_obstacle_height", config.min_obstacle_height);
   node->get_parameter(name_ + "." + source + "." + "max_obstacle_height", config.max_obstacle_height);
   node->get_parameter(name_ + "." + source + "." + "height_relative_to_base", config.height_relative_to_base);
+  node->get_parameter(name_ + "." + source + "." + "required_for_heartbeat", config.required_for_heartbeat);
   node->get_parameter(name_ + "." + source + "." + "inf_is_valid", config.inf_is_valid);
   node->get_parameter(name_ + "." + source + "." + "marking", config.marking);
   node->get_parameter(name_ + "." + source + "." + "clearing", config.clearing);
@@ -346,6 +375,8 @@ void SpatioTemporalVoxelLayer::configureObservationSource(
 {
   auto buffer_config = createMeasurementBufferConfig(node, config, transform_tolerance);
   auto buffer = std::make_shared<buffer::MeasurementBuffer>(buffer_config);
+
+  heartbeat_required_sources_[config.name] = config.required_for_heartbeat;
 
   if (_observation_manager) {
     _observation_manager->registerBuffer(buffer, config.marking, config.clearing);
@@ -486,6 +517,26 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
     "voxel_grid", rclcpp::QoS(1), pub_opt);
   _elevation_pub = node->create_publisher<sensor_msgs::msg::PointCloud2>(
     "elevation_map", rclcpp::QoS(1), pub_opt);
+
+  if (publish_heartbeat_) {
+    const auto resolve_topic = [this](const std::string & topic, const std::string & fallback) -> std::string {
+        const std::string chosen = topic.empty() ? fallback : topic;
+        if (!chosen.empty() && chosen.front() == '/') {
+          return chosen;
+        }
+        return name_ + "/" + chosen;
+      };
+
+    heartbeat_pub_ = node->create_publisher<std_msgs::msg::Bool>(
+      resolve_topic(heartbeat_topic_, "heartbeat"), rclcpp::QoS(1), pub_opt);
+    heartbeat_status_pub_ = node->create_publisher<std_msgs::msg::String>(
+      resolve_topic(heartbeat_status_topic_, "heartbeat_status"), rclcpp::QoS(1), pub_opt);
+
+    heartbeat_timer_ = node->create_wall_timer(
+      std::chrono::duration<double>(heartbeat_period_s_),
+      std::bind(&SpatioTemporalVoxelLayer::heartbeatTimerCallback, this),
+      callback_group_);
+  }
 
   auto save_grid_callback = std::bind(
     &SpatioTemporalVoxelLayer::SaveGridCallback, this, _1, _2, _3);
@@ -811,30 +862,47 @@ void SpatioTemporalVoxelLayer::updateCosts(
   int min_i, int min_j, int max_i, int max_j)
 /*****************************************************************************/
 {
-  // update costs in master_grid with costmap_
-  if (!_enabled) {
-    return;
-  }
+  auto node = node_.lock();
+  const auto now = node ? node->now() : rclcpp::Time(0, 0, RCL_ROS_TIME);
 
-  // if not current due to reset, set current now after clearing
-  if (!current_ && was_reset_) {
-    was_reset_ = false;
-    current_ = true;
-  }
+  try {
+    // update costs in master_grid with costmap_
+    if (!_enabled) {
+      return;
+    }
 
-  if (_update_footprint_enabled) {
-    setConvexPolygonCost(_transformed_footprint, nav2_costmap_2d::FREE_SPACE);
-  }
+    // if not current due to reset, set current now after clearing
+    if (!current_ && was_reset_) {
+      was_reset_ = false;
+      current_ = true;
+    }
 
-  switch (_combination_method) {
-    case 0:
-      updateWithOverwrite(master_grid, min_i, min_j, max_i, max_j);
-      break;
-    case 1:
-      updateWithMax(master_grid, min_i, min_j, max_i, max_j);
-      break;
-    default:
-      break;
+    if (_update_footprint_enabled) {
+      setConvexPolygonCost(_transformed_footprint, nav2_costmap_2d::FREE_SPACE);
+    }
+
+    switch (_combination_method) {
+      case 0:
+        updateWithOverwrite(master_grid, min_i, min_j, max_i, max_j);
+        break;
+      case 1:
+        updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+        break;
+      default:
+        break;
+    }
+
+    if (node) {
+      last_update_costs_success_ns_.store(now.nanoseconds(), std::memory_order_relaxed);
+    }
+  } catch (const std::exception & ex) {
+    if (node) {
+      last_update_costs_error_ns_.store(now.nanoseconds(), std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lock(heartbeat_error_mutex_);
+      last_update_costs_error_msg_ = ex.what();
+    }
+    RCLCPP_ERROR(logger_, "%s updateCosts exception: %s", getName().c_str(), ex.what());
+    current_ = false;
   }
 }
 
@@ -1027,118 +1095,273 @@ void SpatioTemporalVoxelLayer::updateBounds(
   double * min_x, double * min_y, double * max_x, double * max_y)
 /*****************************************************************************/
 {
-  // grabs new max bounds for the costmap
-  if (!_enabled) {
+  auto node = node_.lock();
+
+  try {
+    // grabs new max bounds for the costmap
+    if (!_enabled) {
+      return;
+    }
+
+    // Required because UpdateROSCostmap will also lock if AFTER we lock here voxel_grid_lock,
+    // and if clearArea is called in between, we will have a deadlock
+    boost::unique_lock<mutex_t> cm_lock(*getMutex());
+
+    boost::recursive_mutex::scoped_lock lock(_voxel_grid_lock);
+
+    if (!node) {
+      RCLCPP_WARN(logger_, "%s could not lock lifecycle node for pruning", getName().c_str());
+      return;
+    }
+
+    // Steve's Note June 22, 2018
+    // I dislike this necessity, I can't remove the master grid's knowledge about
+    // STVL on the fly so I have play games with the API even though this isn't
+    // really a rolling plugin implementation. It works, but isn't ideal.
+    if (layered_costmap_->isRolling()) {
+      updateOrigin(
+        robot_x - getSizeInMetersX() / 2,
+        robot_y - getSizeInMetersY() / 2);
+    }
+
+    if (_pruning_manager && _voxel_grid) {
+      _pruning_config.mapping_mode = _mapping_mode;
+      _pruning_manager->setConfig(_pruning_config);
+
+      internal::PruningContext context;
+      context.origin_x = getOriginX();
+      context.origin_y = getOriginY();
+      context.size_x = getSizeInMetersX();
+      context.size_y = getSizeInMetersY();
+      context.global_frame = _global_frame;
+
+      _pruning_manager->pruneIfNeeded(context, node->now(), *_voxel_grid, logger_);
+    }
+
+    useExtraBounds(min_x, min_y, max_x, max_y);
+
+    bool current = true;
+    std::vector<observation::MeasurementReading> marking_observations,
+      clearing_observations;
+    current = GetMarkingObservations(marking_observations) && current;
+    current = GetClearingObservations(clearing_observations) && current;
+    ObservationsResetAfterReading();
+    current_ = current;
+
+    volume_grid::OccupanyCellSet cleared_cells;
+
+    // navigation mode: clear observations, mapping mode: save maps and publish
+    bool should_save = false;
+    if (_map_save_duration) {
+      should_save = node->now() - _last_map_save_time > *_map_save_duration;
+    }
+    if (!_mapping_mode) {
+      _voxel_grid->ClearFrustums(clearing_observations, cleared_cells);
+    } else if (should_save) {
+      _last_map_save_time = node->now();
+      time_t rawtime;
+      struct tm * timeinfo;
+      char time_buffer[100];
+      time(&rawtime);
+      timeinfo = localtime(&rawtime);  //NOLINT
+      strftime(time_buffer, 100, "%F-%r", timeinfo);
+
+      auto request =
+        std::make_shared<spatio_temporal_voxel_layer::srv::SaveGrid::Request>();
+      auto response =
+        std::make_shared<spatio_temporal_voxel_layer::srv::SaveGrid::Response>();
+      request->file_name = time_buffer;
+      SaveGridCallback(nullptr, request, response);
+    }
+
+    // mark observations
+    _voxel_grid->Mark(marking_observations);
+
+    // update the ROS Layered Costmap
+    UpdateROSCostmap(min_x, min_y, max_x, max_y, cleared_cells);
+
+    // publish point cloud in navigation mode
+    if (_publish_voxels && !_mapping_mode) {
+      stvl::core::PointCloud occupancy_cloud;
+      _voxel_grid->GetOccupancyPointCloud(occupancy_cloud);
+      const auto pc2_msg = stvl::bridge::toPointCloud2(occupancy_cloud, _global_frame, node->now());
+      _voxel_pub->publish(pc2_msg);
+    }
+
+    if (_publish_elevation_map && !_mapping_mode && _elevation_pub) {
+      double elevation_ceiling = std::numeric_limits<double>::quiet_NaN();
+      bool limit_elevation = _limit_elevation &&
+        std::isfinite(_max_elevation_above_robot_base);
+      if (limit_elevation) {
+        double elevation_base_z = 0.0;
+        if (getRobotBaseHeight(elevation_base_z)) {
+          elevation_ceiling = elevation_base_z + _max_elevation_above_robot_base;
+        } else {
+          limit_elevation = false;
+        }
+      }
+
+      stvl::core::PointCloud elevation_cloud;
+      _voxel_grid->GetElevationPointCloud(elevation_cloud, limit_elevation, elevation_ceiling);
+      auto elevation_msg = stvl::bridge::toPointCloud2(elevation_cloud, _global_frame, node->now());
+      _elevation_pub->publish(elevation_msg);
+    }
+
+    // update footprint
+    updateFootprint(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y);
+
+    last_update_bounds_success_ns_.store(node->now().nanoseconds(), std::memory_order_relaxed);
+  } catch (const std::exception & ex) {
+    if (node) {
+      last_update_bounds_error_ns_.store(node->now().nanoseconds(), std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lock(heartbeat_error_mutex_);
+      last_update_bounds_error_msg_ = ex.what();
+    }
+    RCLCPP_ERROR(logger_, "%s updateBounds exception: %s", getName().c_str(), ex.what());
+    current_ = false;
+  }
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
+/*****************************************************************************/
+{
+  if (!publish_heartbeat_ || !heartbeat_pub_ || !heartbeat_status_pub_) {
     return;
   }
-
-  // Required because UpdateROSCostmap will also lock if AFTER we lock here voxel_grid_lock,
-  // and if clearArea is called in between, we will have a deadlock
-  boost::unique_lock<mutex_t> cm_lock(*getMutex());
-
-  boost::recursive_mutex::scoped_lock lock(_voxel_grid_lock);
 
   auto node = node_.lock();
   if (!node) {
-    RCLCPP_WARN(logger_, "%s could not lock lifecycle node for pruning", getName().c_str());
     return;
   }
 
-  // Steve's Note June 22, 2018
-  // I dislike this necessity, I can't remove the master grid's knowledge about
-  // STVL on the fly so I have play games with the API even though this isn't
-  // really a rolling plugin implementation. It works, but isn't ideal.
-  if (layered_costmap_->isRolling()) {
-    updateOrigin(
-      robot_x - getSizeInMetersX() / 2,
-      robot_y - getSizeInMetersY() / 2);
+  const auto now = node->now();
+  const auto clock_type = node->get_clock()->get_clock_type();
+  const auto costmap_timeout = rclcpp::Duration::from_seconds(heartbeat_costmap_timeout_s_);
+
+  bool healthy = true;
+  std::ostringstream reason;
+
+  if (!_enabled) {
+    healthy = false;
+    reason << "layer disabled";
   }
 
-  if (_pruning_manager && _voxel_grid) {
-    _pruning_config.mapping_mode = _mapping_mode;
-    _pruning_manager->setConfig(_pruning_config);
-
-    internal::PruningContext context;
-    context.origin_x = getOriginX();
-    context.origin_y = getOriginY();
-    context.size_x = getSizeInMetersX();
-    context.size_y = getSizeInMetersY();
-    context.global_frame = _global_frame;
-
-    _pruning_manager->pruneIfNeeded(context, node->now(), *_voxel_grid, logger_);
+  if (!_observation_manager) {
+    healthy = false;
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "observation manager not initialized";
   }
 
-  useExtraBounds(min_x, min_y, max_x, max_y);
-
-  bool current = true;
-  std::vector<observation::MeasurementReading> marking_observations,
-    clearing_observations;
-  current = GetMarkingObservations(marking_observations) && current;
-  current = GetClearingObservations(clearing_observations) && current;
-  ObservationsResetAfterReading();
-  current_ = current;
-
-  volume_grid::OccupanyCellSet cleared_cells;
-
-  // navigation mode: clear observations, mapping mode: save maps and publish
-  bool should_save = false;
-  if (_map_save_duration) {
-    should_save = node->now() - _last_map_save_time > *_map_save_duration;
-  }
-  if (!_mapping_mode) {
-    _voxel_grid->ClearFrustums(clearing_observations, cleared_cells);
-  } else if (should_save) {
-    _last_map_save_time = node->now();
-    time_t rawtime;
-    struct tm * timeinfo;
-    char time_buffer[100];
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);  //NOLINT
-    strftime(time_buffer, 100, "%F-%r", timeinfo);
-
-    auto request =
-      std::make_shared<spatio_temporal_voxel_layer::srv::SaveGrid::Request>();
-    auto response =
-      std::make_shared<spatio_temporal_voxel_layer::srv::SaveGrid::Response>();
-    request->file_name = time_buffer;
-    SaveGridCallback(nullptr, request, response);
+  if (!_voxel_grid) {
+    healthy = false;
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "voxel grid not initialized";
   }
 
-  // mark observations
-  _voxel_grid->Mark(marking_observations);
-
-  // update the ROS Layered Costmap
-  UpdateROSCostmap(min_x, min_y, max_x, max_y, cleared_cells);
-
-  // publish point cloud in navigation mode
-  if (_publish_voxels && !_mapping_mode) {
-    stvl::core::PointCloud occupancy_cloud;
-    _voxel_grid->GetOccupancyPointCloud(occupancy_cloud);
-    const auto pc2_msg = stvl::bridge::toPointCloud2(occupancy_cloud, _global_frame, node->now());
-    _voxel_pub->publish(pc2_msg);
+  const auto bounds_success = rclcpp::Time(
+    last_update_bounds_success_ns_.load(std::memory_order_relaxed), clock_type);
+  const auto bounds_error = rclcpp::Time(
+    last_update_bounds_error_ns_.load(std::memory_order_relaxed), clock_type);
+  if (bounds_error > bounds_success) {
+    healthy = false;
+    std::lock_guard<std::mutex> lock(heartbeat_error_mutex_);
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "updateBounds error: " << last_update_bounds_error_msg_;
+  }
+  if (bounds_success.nanoseconds() == 0) {
+    healthy = false;
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "updateBounds never succeeded";
+  } else if ((now - bounds_success) > costmap_timeout) {
+    healthy = false;
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "updateBounds stale";
   }
 
-  if (_publish_elevation_map && !_mapping_mode && _elevation_pub) {
-    double elevation_ceiling = std::numeric_limits<double>::quiet_NaN();
-    bool limit_elevation = _limit_elevation &&
-      std::isfinite(_max_elevation_above_robot_base);
-    if (limit_elevation) {
-      double elevation_base_z = 0.0;
-      if (getRobotBaseHeight(elevation_base_z)) {
-        elevation_ceiling = elevation_base_z + _max_elevation_above_robot_base;
-      } else {
-        limit_elevation = false;
-      }
-    }
-
-    stvl::core::PointCloud elevation_cloud;
-    _voxel_grid->GetElevationPointCloud(elevation_cloud, limit_elevation, elevation_ceiling);
-    auto elevation_msg = stvl::bridge::toPointCloud2(elevation_cloud, _global_frame, node->now());
-    _elevation_pub->publish(elevation_msg);
+  const auto costs_success = rclcpp::Time(
+    last_update_costs_success_ns_.load(std::memory_order_relaxed), clock_type);
+  const auto costs_error = rclcpp::Time(
+    last_update_costs_error_ns_.load(std::memory_order_relaxed), clock_type);
+  if (costs_error > costs_success) {
+    healthy = false;
+    std::lock_guard<std::mutex> lock(heartbeat_error_mutex_);
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "updateCosts error: " << last_update_costs_error_msg_;
+  }
+  if (costs_success.nanoseconds() == 0) {
+    healthy = false;
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "updateCosts never succeeded";
+  } else if ((now - costs_success) > costmap_timeout) {
+    healthy = false;
+    if (!reason.str().empty()) {reason << "; ";}
+    reason << "updateCosts stale";
   }
 
-  // update footprint
-  updateFootprint(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y);
+  if (_observation_manager) {
+    _observation_manager->forEachBuffer(
+      [this, &healthy, &reason, &now](const internal::ObservationManager::BufferPtr & buffer) {
+        if (!buffer) {
+          healthy = false;
+          if (!reason.str().empty()) {reason << "; ";}
+          reason << "null measurement buffer";
+          return;
+        }
+
+        const auto source = buffer->GetSourceName();
+        const auto required_it = heartbeat_required_sources_.find(source);
+        const bool required = required_it == heartbeat_required_sources_.end() ? true : required_it->second;
+        if (!required) {
+          return;
+        }
+
+        if (!buffer->IsEnabled()) {
+          healthy = false;
+          if (!reason.str().empty()) {reason << "; ";}
+          reason << source << " disabled";
+          return;
+        }
+
+        const auto expected_rate_s = buffer->GetExpectedUpdateRateSeconds();
+        const double expected_timeout_s = expected_rate_s > 0.0 ?
+          std::max(heartbeat_min_sensor_timeout_s_, expected_rate_s * heartbeat_expected_update_rate_multiplier_) :
+          heartbeat_default_sensor_timeout_s_;
+        const auto timeout = rclcpp::Duration::from_seconds(expected_timeout_s);
+
+        const auto last_success = buffer->GetLastSuccessfulBufferTime();
+        const auto last_error = buffer->GetLastErrorTime();
+
+        if (last_error > last_success) {
+          healthy = false;
+          if (!reason.str().empty()) {reason << "; ";}
+          reason << source << " last error: " << buffer->GetLastErrorMessage();
+          return;
+        }
+
+        if (last_success.nanoseconds() == 0) {
+          healthy = false;
+          if (!reason.str().empty()) {reason << "; ";}
+          reason << source << " never buffered successfully";
+          return;
+        }
+
+        if ((now - last_success) > timeout) {
+          healthy = false;
+          if (!reason.str().empty()) {reason << "; ";}
+          reason << source << " stale (no successful buffer in " << expected_timeout_s << "s)";
+          return;
+        }
+      });
+  }
+
+  std_msgs::msg::Bool hb;
+  hb.data = healthy;
+  heartbeat_pub_->publish(hb);
+
+  std_msgs::msg::String status;
+  status.data = healthy ? std::string("OK") : reason.str();
+  heartbeat_status_pub_->publish(status);
 }
 
 /*****************************************************************************/

@@ -119,6 +119,14 @@ rgbd_obstacle_layer:
   origin_z:              0.0    #meters
   publish_voxel_map:     true   # default off
   publish_elevation_map: true   # default off, publishes ground elevation as XYZ point cloud
+  publish_heartbeat:     false  # default off, publishes a fail-closed health heartbeat
+  heartbeat_topic:       "heartbeat"  # published as <layer_name>/<topic> unless absolute (starts with /)
+  heartbeat_status_topic: "heartbeat_status"  # String with "OK" or a failure reason
+  heartbeat_period:      0.2    # seconds, heartbeat publish rate
+  heartbeat_costmap_timeout: 1.0  # seconds, max age for updateBounds/updateCosts success
+  heartbeat_default_sensor_timeout: 1.0  # seconds, max age for a successful buffer when expected_update_rate is 0
+  heartbeat_min_sensor_timeout: 0.2  # seconds, lower bound for per-sensor timeout derived from expected_update_rate
+  heartbeat_expected_update_rate_multiplier: 2.5  # scales expected_update_rate into a timeout window
   transform_tolerance:   0.2    # seconds
   mapping_mode:          false  # default off, saves map not for navigation
   map_save_duration:     60     #default 60s, how often to autosave
@@ -131,6 +139,7 @@ rgbd_obstacle_layer:
     min_obstacle_height: 0.3     #default 0, meters
     max_obstacle_height: 2.0     #defaule 3, meters
     height_relative_to_base: false  #default false; if true, heights are relative to robot base Z (see prune_robot_base_frame). Requires filter passthrough/voxel; if base TF is unavailable or filter is none, observation is rejected.
+    required_for_heartbeat: true  # default true; if true, heartbeat is red unless this source is healthy
     expected_update_rate: 0.0    #default 0, if not updating at this rate at least, remove from buffer
     observation_persistence: 0.0 #default 0, use all measurements taken during now-value, 0=latest 
     inf_is_valid: false          #default false, for laser scans
@@ -143,6 +152,7 @@ rgbd_obstacle_layer:
     topic: camera1/depth/points
     marking: false
     clearing: true
+    required_for_heartbeat: false # often false for clearing-only sources; set true if required for safety
     min_z: 0.1                   #default 0, meters
     max_z: 7.0                   #default 10, meters
     vertical_fov_angle: 0.7      #default 0.7, radians

@@ -15,7 +15,10 @@
 
 #include "pcl_conversions/pcl_conversions.h"
 
+// Test-only access to private members for heartbeat bookkeeping validation.
+#define private public
 #include "spatio_temporal_voxel_layer/bridge/measurement_buffer.hpp"
+#undef private
 
 namespace
 {
@@ -222,6 +225,44 @@ TEST_F(MeasurementBufferFixture, HeightRelativeToBaseRejectsWhenFilterNone)
   buffer.GetReadings(readings);
 
   EXPECT_TRUE(readings.empty());
+}
+
+TEST_F(MeasurementBufferFixture, ClearingOnlyBufferUpdatesSuccessAndClearsLastErrorMessage)
+{
+  const auto stamp = clock_->now();
+  auto camera_tf = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(camera_tf, "test_authority", true);
+
+  auto config = makeBaseBuilder()
+    .setMarking(false)
+    .setClearing(true)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  // Seed an error state; clearing-only buffering should clear the last error message
+  // and record a successful buffer time.
+  {
+    const auto now_ns = clock_->now().nanoseconds();
+    const int64_t seeded_error_ns = (now_ns > 1000000) ? (now_ns - 1000000) : 0;
+    buffer.last_error_time_ns_.store(seeded_error_ns, std::memory_order_relaxed);
+    buffer.error_count_.store(1U, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(buffer.last_error_mutex_);
+    buffer.last_error_message_ = "seeded error";
+  }
+  buffer.last_success_time_ns_.store(0, std::memory_order_relaxed);
+
+  const auto before_success = buffer.GetLastSuccessfulBufferTime();
+  EXPECT_EQ(before_success.nanoseconds(), 0);
+  EXPECT_FALSE(buffer.GetLastErrorMessage().empty());
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  const auto after_success = buffer.GetLastSuccessfulBufferTime();
+  EXPECT_GT(after_success.nanoseconds(), 0);
+  EXPECT_TRUE(buffer.GetLastErrorMessage().empty());
 }
 
 int main(int argc, char ** argv)
