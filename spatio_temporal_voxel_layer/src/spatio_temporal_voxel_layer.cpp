@@ -52,6 +52,7 @@
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_layer.hpp"
 #include "spatio_temporal_voxel_layer/bridge/point_cloud_conversions.hpp"
 #include "spatio_temporal_voxel_layer/internal/elevation_lethal.hpp"
+#include "spatio_temporal_voxel_layer/internal/heartbeat_evaluator.hpp"
 #include "openvdb/math/BBox.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
@@ -1237,75 +1238,38 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
 
   const auto now = node->now();
   const auto clock_type = node->get_clock()->get_clock_type();
-  const auto costmap_timeout = rclcpp::Duration::from_seconds(heartbeat_costmap_timeout_s_);
 
-  bool healthy = true;
-  std::ostringstream reason;
+  internal::heartbeat::HeartbeatConfig hb_config;
+  hb_config.costmap_timeout_s = heartbeat_costmap_timeout_s_;
+  hb_config.default_sensor_timeout_s = heartbeat_default_sensor_timeout_s_;
+  hb_config.min_sensor_timeout_s = heartbeat_min_sensor_timeout_s_;
+  hb_config.expected_update_rate_multiplier = heartbeat_expected_update_rate_multiplier_;
 
-  if (!_enabled) {
-    healthy = false;
-    reason << "layer disabled";
-  }
+  internal::heartbeat::CostmapCycleState costmap;
+  costmap.layer_enabled = _enabled;
+  costmap.observation_manager_initialized = static_cast<bool>(_observation_manager);
+  costmap.voxel_grid_initialized = static_cast<bool>(_voxel_grid);
 
-  if (!_observation_manager) {
-    healthy = false;
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "observation manager not initialized";
-  }
-
-  if (!_voxel_grid) {
-    healthy = false;
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "voxel grid not initialized";
-  }
-
-  const auto bounds_success = rclcpp::Time(
+  costmap.update_bounds_last_success = rclcpp::Time(
     last_update_bounds_success_ns_.load(std::memory_order_relaxed), clock_type);
-  const auto bounds_error = rclcpp::Time(
+  costmap.update_bounds_last_error = rclcpp::Time(
     last_update_bounds_error_ns_.load(std::memory_order_relaxed), clock_type);
-  if (bounds_error > bounds_success) {
-    healthy = false;
-    std::lock_guard<std::mutex> lock(heartbeat_error_mutex_);
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "updateBounds error: " << last_update_bounds_error_msg_;
-  }
-  if (bounds_success.nanoseconds() == 0) {
-    healthy = false;
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "updateBounds never succeeded";
-  } else if ((now - bounds_success) > costmap_timeout) {
-    healthy = false;
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "updateBounds stale";
-  }
-
-  const auto costs_success = rclcpp::Time(
+  costmap.update_costs_last_success = rclcpp::Time(
     last_update_costs_success_ns_.load(std::memory_order_relaxed), clock_type);
-  const auto costs_error = rclcpp::Time(
+  costmap.update_costs_last_error = rclcpp::Time(
     last_update_costs_error_ns_.load(std::memory_order_relaxed), clock_type);
-  if (costs_error > costs_success) {
-    healthy = false;
+  {
     std::lock_guard<std::mutex> lock(heartbeat_error_mutex_);
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "updateCosts error: " << last_update_costs_error_msg_;
-  }
-  if (costs_success.nanoseconds() == 0) {
-    healthy = false;
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "updateCosts never succeeded";
-  } else if ((now - costs_success) > costmap_timeout) {
-    healthy = false;
-    if (!reason.str().empty()) {reason << "; ";}
-    reason << "updateCosts stale";
+    costmap.update_bounds_last_error_msg = last_update_bounds_error_msg_;
+    costmap.update_costs_last_error_msg = last_update_costs_error_msg_;
   }
 
+  std::vector<internal::heartbeat::SourceState> sources;
   if (_observation_manager) {
     _observation_manager->forEachBuffer(
-      [this, &healthy, &reason, &now](const internal::ObservationManager::BufferPtr & buffer) {
+      [this, &sources, &costmap](const internal::ObservationManager::BufferPtr & buffer) {
         if (!buffer) {
-          healthy = false;
-          if (!reason.str().empty()) {reason << "; ";}
-          reason << "null measurement buffer";
+          costmap.has_null_measurement_buffer = true;
           return;
         }
 
@@ -1316,51 +1280,26 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
           return;
         }
 
-        if (!buffer->IsEnabled()) {
-          healthy = false;
-          if (!reason.str().empty()) {reason << "; ";}
-          reason << source << " disabled";
-          return;
-        }
-
-        const auto expected_rate_s = buffer->GetExpectedUpdateRateSeconds();
-        const double expected_timeout_s = expected_rate_s > 0.0 ?
-          std::max(heartbeat_min_sensor_timeout_s_, expected_rate_s * heartbeat_expected_update_rate_multiplier_) :
-          heartbeat_default_sensor_timeout_s_;
-        const auto timeout = rclcpp::Duration::from_seconds(expected_timeout_s);
-
-        const auto last_success = buffer->GetLastSuccessfulBufferTime();
-        const auto last_error = buffer->GetLastErrorTime();
-
-        if (last_error > last_success) {
-          healthy = false;
-          if (!reason.str().empty()) {reason << "; ";}
-          reason << source << " last error: " << buffer->GetLastErrorMessage();
-          return;
-        }
-
-        if (last_success.nanoseconds() == 0) {
-          healthy = false;
-          if (!reason.str().empty()) {reason << "; ";}
-          reason << source << " never buffered successfully";
-          return;
-        }
-
-        if ((now - last_success) > timeout) {
-          healthy = false;
-          if (!reason.str().empty()) {reason << "; ";}
-          reason << source << " stale (no successful buffer in " << expected_timeout_s << "s)";
-          return;
-        }
+        internal::heartbeat::SourceState state;
+        state.source_name = source;
+        state.required = true;
+        state.enabled = buffer->IsEnabled();
+        state.expected_update_rate_s = buffer->GetExpectedUpdateRateSeconds();
+        state.last_success = buffer->GetLastSuccessfulBufferTime();
+        state.last_error = buffer->GetLastErrorTime();
+        state.last_error_msg = buffer->GetLastErrorMessage();
+        sources.push_back(std::move(state));
       });
   }
 
+  const auto result = internal::heartbeat::evaluateHeartbeat(now, hb_config, costmap, sources);
+
   std_msgs::msg::Bool hb;
-  hb.data = healthy;
+  hb.data = result.healthy;
   heartbeat_pub_->publish(hb);
 
   std_msgs::msg::String status;
-  status.data = healthy ? std::string("OK") : reason.str();
+  status.data = result.reason;
   heartbeat_status_pub_->publish(status);
 }
 

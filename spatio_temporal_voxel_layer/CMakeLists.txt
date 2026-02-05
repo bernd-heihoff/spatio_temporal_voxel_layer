@@ -181,6 +181,11 @@ if(BUILD_TESTING)
     target_link_libraries(sliding_window_2d_test stvl_bridge)
     ament_target_dependencies(sliding_window_2d_test ${bridge_dependencies})
   endif()
+
+  ament_add_gtest(heartbeat_evaluator_test test/heartbeat_evaluator_test.cpp)
+  if(TARGET heartbeat_evaluator_test)
+    ament_target_dependencies(heartbeat_evaluator_test rclcpp)
+  endif()
 endif()
 
 install(TARGETS stvl_core stvl_bridge stvl_plugin stvl_vdb2pc
