@@ -230,6 +230,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
     rclcpp::ParameterValue(std::string("PointCloud2")));
   declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(3.0));
+  declareParameter(source + "." + "height_relative_to_base", rclcpp::ParameterValue(false));
   declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
   declareParameter(source + "." + "marking", rclcpp::ParameterValue(true));
   declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
@@ -254,6 +255,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   node->get_parameter(name_ + "." + source + "." + "data_type", config.data_type);
   node->get_parameter(name_ + "." + source + "." + "min_obstacle_height", config.min_obstacle_height);
   node->get_parameter(name_ + "." + source + "." + "max_obstacle_height", config.max_obstacle_height);
+  node->get_parameter(name_ + "." + source + "." + "height_relative_to_base", config.height_relative_to_base);
   node->get_parameter(name_ + "." + source + "." + "inf_is_valid", config.inf_is_valid);
   node->get_parameter(name_ + "." + source + "." + "marking", config.marking);
   node->get_parameter(name_ + "." + source + "." + "clearing", config.clearing);
@@ -308,6 +310,8 @@ buffer::MeasurementBufferConfig SpatioTemporalVoxelLayer::createMeasurementBuffe
          .setExpectedUpdateRate(config.expected_update_rate)
          .setMinObstacleHeight(config.min_obstacle_height)
          .setMaxObstacleHeight(config.max_obstacle_height)
+      .setHeightRelativeToBase(config.height_relative_to_base)
+      .setRobotBaseFrame(_pruning_config.base_frame)
          .setObstacleRange(config.obstacle_range)
          .setTfBuffer(tf_)
          .setGlobalFrame(_global_frame)
@@ -1246,6 +1250,28 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
         }
       }
 
+      if (type == ParameterType::PARAMETER_BOOL) {
+        auto apply_to_buffer = [&](auto && setter)
+        {
+          if (!_observation_manager) {
+            return;
+          }
+          auto target_buffer = _observation_manager->bufferBySource(source);
+          if (!target_buffer) {
+            return;
+          }
+          target_buffer->Lock();
+          setter(*target_buffer);
+          target_buffer->Unlock();
+        };
+
+        if (name == name_ + "." + source + "." + "height_relative_to_base") {
+          apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
+            buf.SetHeightRelativeToBase(parameter.as_bool());
+          });
+        }
+      }
+
       if (type == ParameterType::PARAMETER_DOUBLE) {
         bool pruning_updated = false;
 
@@ -1362,6 +1388,14 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           _pruning_config.base_frame = value;
           if (_pruning_manager) {
             _pruning_manager->setConfig(_pruning_config);
+          }
+
+          if (_observation_manager) {
+            _observation_manager->forEachBuffer([&](internal::ObservationManager::BufferPtr & buf) {
+              if (buf) {
+                buf->SetRobotBaseFrame(_pruning_config.base_frame);
+              }
+            });
           }
         }
       }

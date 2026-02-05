@@ -76,6 +76,8 @@ MeasurementBuffer::MeasurementBuffer(const MeasurementBufferConfig & config)
   _max_obstacle_height(config.max_obstacle_height),
   _obstacle_range(config.obstacle_range),
   _tf_tolerance(config.tf_tolerance),
+  _height_relative_to_base(config.height_relative_to_base),
+  _robot_base_frame(config.robot_base_frame),
   _min_z(config.min_z),
   _max_z(config.max_z),
   _vertical_fov(config.vertical_fov),
@@ -130,7 +132,7 @@ void MeasurementBuffer::BufferROSCloud(
     }
 
     auto global_cloud = TransformCloudToGlobal(cloud);
-    ApplyFilter(*global_cloud);
+    ApplyFilter(*global_cloud, cloud.header.stamp);
     AssignPointCloud(observation, *global_cloud);
   } catch (const tf2::TransformException & ex) {
     _observation_list.pop_front();
@@ -138,6 +140,13 @@ void MeasurementBuffer::BufferROSCloud(
       logger_,
       "TF Exception for sensor frame: %s, cloud frame: %s, %s",
       _sensor_frame.c_str(), cloud.header.frame_id.c_str(), ex.what());
+    return;
+  } catch (const std::exception & ex) {
+    _observation_list.pop_front();
+    RCLCPP_ERROR(
+      logger_,
+      "Failed to buffer cloud for %s (%s): %s",
+      _source_name.c_str(), cloud.header.frame_id.c_str(), ex.what());
     return;
   }
 
@@ -252,6 +261,20 @@ void MeasurementBuffer::SetMaxObstacleHeight(const double & max_obstacle_height)
 }
 
 /*****************************************************************************/
+void MeasurementBuffer::SetHeightRelativeToBase(const bool & enabled)
+/*****************************************************************************/
+{
+  _height_relative_to_base = enabled;
+}
+
+/*****************************************************************************/
+void MeasurementBuffer::SetRobotBaseFrame(const std::string & frame)
+/*****************************************************************************/
+{
+  _robot_base_frame = frame;
+}
+
+/*****************************************************************************/
 void MeasurementBuffer::SetMinZ(const double & min_z)
 /*****************************************************************************/
 {
@@ -362,11 +385,45 @@ point_cloud_ptr MeasurementBuffer::TransformCloudToGlobal(
 }
 
 /*****************************************************************************/
-void MeasurementBuffer::ApplyFilter(sensor_msgs::msg::PointCloud2 & cloud) const
+void MeasurementBuffer::ApplyFilter(
+  sensor_msgs::msg::PointCloud2 & cloud,
+  const builtin_interfaces::msg::Time & stamp) const
 /*****************************************************************************/
 {
   if (_filter == Filters::NONE) {
+    if (_height_relative_to_base) {
+      throw std::runtime_error(
+        _source_name +
+        " height_relative_to_base is true but filter is NONE; rejecting observation (enable 'passthrough' or 'voxel').");
+    }
     return;
+  }
+
+  double height_offset_z = 0.0;
+  if (_height_relative_to_base) {
+    if (_robot_base_frame.empty()) {
+      throw std::runtime_error(
+        _source_name +
+        " height_relative_to_base is true but robot_base_frame is empty; rejecting observation.");
+    } else {
+      try {
+        const geometry_msgs::msg::TransformStamped base_in_global = _buffer.lookupTransform(
+          _global_frame, _robot_base_frame, tf2_ros::fromMsg(stamp));
+        height_offset_z = static_cast<double>(base_in_global.transform.translation.z);
+      } catch (const tf2::TransformException & ex) {
+        throw std::runtime_error(
+          _source_name +
+          " failed to lookup base frame '" + _robot_base_frame +
+          "' in '" + _global_frame +
+          "' for height-relative filtering: " + ex.what() + "; rejecting observation.");
+      }
+    }
+  }
+
+  double min_h = _min_obstacle_height + height_offset_z;
+  double max_h = _max_obstacle_height + height_offset_z;
+  if (min_h > max_h) {
+    std::swap(min_h, max_h);
   }
 
   pcl::PCLPointCloud2::Ptr cloud_pcl(new pcl::PCLPointCloud2());
@@ -377,7 +434,7 @@ void MeasurementBuffer::ApplyFilter(sensor_msgs::msg::PointCloud2 & cloud) const
     pcl::VoxelGrid<pcl::PCLPointCloud2> sor;
     sor.setInputCloud(cloud_pcl);
     sor.setFilterFieldName("z");
-    sor.setFilterLimits(_min_obstacle_height, _max_obstacle_height);
+    sor.setFilterLimits(min_h, max_h);
     sor.setDownsampleAllData(false);
     float v_s = static_cast<float>(_voxel_size);
     sor.setLeafSize(v_s, v_s, v_s);
@@ -389,7 +446,7 @@ void MeasurementBuffer::ApplyFilter(sensor_msgs::msg::PointCloud2 & cloud) const
     pass_through_filter.setInputCloud(cloud_pcl);
     pass_through_filter.setKeepOrganized(false);
     pass_through_filter.setFilterFieldName("z");
-    pass_through_filter.setFilterLimits(_min_obstacle_height, _max_obstacle_height);
+    pass_through_filter.setFilterLimits(min_h, max_h);
     pass_through_filter.filter(*cloud_filtered);
     pcl_conversions::fromPCL(*cloud_filtered, cloud);
   }

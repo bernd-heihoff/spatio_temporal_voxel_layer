@@ -168,6 +168,62 @@ TEST_F(MeasurementBufferFixture, RemovesStaleObservations)
   EXPECT_TRUE(readings.empty());
 }
 
+TEST_F(MeasurementBufferFixture, HeightRelativeToBaseDropsCloudWhenBaseTfMissing)
+{
+  const auto stamp = clock_->now();
+  auto camera_tf = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(camera_tf, "test_authority", true);
+
+  // Intentionally do NOT publish a transform for base_link.
+  auto config = makeBaseBuilder()
+    .setMarking(true)
+    .setClearing(false)
+    .setFilter(buffer::Filters::PASSTHROUGH)
+    .setHeightRelativeToBase(true)
+    .setRobotBaseFrame("base_link")
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  // Observation is rejected entirely (fail-safe: no marking).
+  EXPECT_TRUE(readings.empty());
+}
+
+TEST_F(MeasurementBufferFixture, HeightRelativeToBaseRejectsWhenFilterNone)
+{
+  const auto stamp = clock_->now();
+  auto camera_tf = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(camera_tf, "test_authority", true);
+
+  auto config = makeBaseBuilder()
+    .setMarking(true)
+    .setClearing(false)
+    .setFilter(buffer::Filters::NONE)
+    .setHeightRelativeToBase(true)
+    .setRobotBaseFrame("base_link")
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  EXPECT_TRUE(readings.empty());
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

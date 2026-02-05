@@ -88,6 +88,8 @@ struct MeasurementBufferConfig
   double expected_update_rate{0.0};
   double min_obstacle_height{0.0};
   double max_obstacle_height{0.0};
+  bool height_relative_to_base{false};
+  std::string robot_base_frame;
   double obstacle_range{0.0};
   tf2_ros::Buffer * tf_buffer{nullptr};
   std::string global_frame;
@@ -147,6 +149,18 @@ public:
   MeasurementBufferBuilder & setMaxObstacleHeight(double value)
   {
     config_.max_obstacle_height = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setHeightRelativeToBase(bool value)
+  {
+    config_.height_relative_to_base = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setRobotBaseFrame(const std::string & value)
+  {
+    config_.robot_base_frame = value;
     return *this;
   }
 
@@ -309,6 +323,8 @@ public:
   // params setters
   void SetMinObstacleHeight(const double & min_obstacle_height);
   void SetMaxObstacleHeight(const double & max_obstacle_height);
+  void SetHeightRelativeToBase(const bool & enabled);
+  void SetRobotBaseFrame(const std::string & frame);
   void SetMinZ(const double & min_z);
   void SetMaxZ(const double & max_z);
   void SetVerticalFovPadding(const double & vertical_fov_padding);
@@ -336,7 +352,9 @@ private:
   geometry_msgs::msg::PoseStamped TransformPoseToGlobal(
     const geometry_msgs::msg::PoseStamped & local_pose) const;
   point_cloud_ptr TransformCloudToGlobal(const sensor_msgs::msg::PointCloud2 & cloud) const;
-  void ApplyFilter(sensor_msgs::msg::PointCloud2 & cloud) const;
+  void ApplyFilter(
+    sensor_msgs::msg::PointCloud2 & cloud,
+    const builtin_interfaces::msg::Time & stamp) const;
   void PopulateObservationMetadata(
     observation::MeasurementReading & observation,
     const geometry_msgs::msg::PoseStamped & global_pose,
@@ -352,6 +370,8 @@ private:
   std::string _global_frame, _sensor_frame, _source_name, _topic_name;
   std::list<observation::MeasurementReading> _observation_list;
   double _min_obstacle_height, _max_obstacle_height, _obstacle_range, _tf_tolerance;
+  bool _height_relative_to_base{false};
+  std::string _robot_base_frame;
   double _min_z, _max_z, _vertical_fov, _vertical_fov_padding, _horizontal_fov;
   double _decay_acceleration, _voxel_size;
   bool _marking, _clearing;

@@ -130,6 +130,7 @@ rgbd_obstacle_layer:
     clearing: false
     min_obstacle_height: 0.3     #default 0, meters
     max_obstacle_height: 2.0     #defaule 3, meters
+    height_relative_to_base: false  #default false; if true, heights are relative to robot base Z (see prune_robot_base_frame). Requires filter passthrough/voxel; if base TF is unavailable or filter is none, observation is rejected.
     expected_update_rate: 0.0    #default 0, if not updating at this rate at least, remove from buffer
     observation_persistence: 0.0 #default 0, use all measurements taken during now-value, 0=latest 
     inf_is_valid: false          #default false, for laser scans

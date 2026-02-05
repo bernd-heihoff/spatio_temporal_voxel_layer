@@ -186,6 +186,7 @@ private:
     double expected_update_rate{0.0};
     double min_obstacle_height{0.0};
     double max_obstacle_height{0.0};
+    bool height_relative_to_base{false};
     double obstacle_range{0.0};
     double min_z{0.0};
     double max_z{0.0};
