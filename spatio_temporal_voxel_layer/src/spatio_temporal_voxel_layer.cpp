@@ -46,6 +46,7 @@
 #include <limits>
 #include <algorithm>
 #include <sstream>
+#include <deque>
 
 #include <pcl_conversions/pcl_conversions.h>
 
@@ -844,11 +845,12 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
 
   const bool lethal_from_elevation_enabled =
     (_elevation_window_size_m > 0.0) && (_elevation_lethal_threshold_m > 0.0);
-  const double half_window_m = lethal_from_elevation_enabled ? (_elevation_window_size_m * 0.5) : 0.0;
-  const int window_radius_cells = lethal_from_elevation_enabled ?
+  const double window_size_m = lethal_from_elevation_enabled ? _elevation_window_size_m : 0.0;
+  const double window_half_size_m = lethal_from_elevation_enabled ? (window_size_m * 0.5) : 0.0;
+  const int window_half_extent_cells = lethal_from_elevation_enabled ?
     static_cast<int>(std::max(
       1.0,
-      std::ceil(half_window_m / static_cast<double>(getResolution())))) : 0;
+      std::ceil(window_half_size_m / static_cast<double>(getResolution())))) : 0;
 
   double base_z = 0.0;
   bool limit_elevation = _limit_elevation && std::isfinite(_max_elevation_above_robot_base);
@@ -942,8 +944,8 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
 
       touch(cell.x, cell.y, min_x, min_y, max_x, max_y);
       if (lethal_from_elevation_enabled) {
-        touch(cell.x - half_window_m, cell.y - half_window_m, min_x, min_y, max_x, max_y);
-        touch(cell.x + half_window_m, cell.y + half_window_m, min_x, min_y, max_x, max_y);
+        touch(cell.x - window_half_size_m, cell.y - window_half_size_m, min_x, min_y, max_x, max_y);
+        touch(cell.x + window_half_size_m, cell.y + window_half_size_m, min_x, min_y, max_x, max_y);
       }
     }
   }
@@ -972,8 +974,8 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
     }
     touch(cell->x, cell->y, min_x, min_y, max_x, max_y);
     if (lethal_from_elevation_enabled) {
-      touch(cell->x - half_window_m, cell->y - half_window_m, min_x, min_y, max_x, max_y);
-      touch(cell->x + half_window_m, cell->y + half_window_m, min_x, min_y, max_x, max_y);
+      touch(cell->x - window_half_size_m, cell->y - window_half_size_m, min_x, min_y, max_x, max_y);
+      touch(cell->x + window_half_size_m, cell->y + window_half_size_m, min_x, min_y, max_x, max_y);
     }
   }
 
@@ -981,58 +983,217 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
     const int size_x = static_cast<int>(getSizeInCellsX());
     const int size_y = static_cast<int>(getSizeInCellsY());
 
-    const int start_x = std::max(0, std::min(size_x - 1, min_mx - window_radius_cells));
-    const int start_y = std::max(0, std::min(size_y - 1, min_my - window_radius_cells));
-    const int end_x = std::max(0, std::min(size_x - 1, max_mx + window_radius_cells));
-    const int end_y = std::max(0, std::min(size_y - 1, max_my + window_radius_cells));
+    const int bbox_start_x = std::max(0, std::min(size_x - 1, min_mx - window_half_extent_cells));
+    const int bbox_start_y = std::max(0, std::min(size_y - 1, min_my - window_half_extent_cells));
+    const int bbox_end_x = std::max(0, std::min(size_x - 1, max_mx + window_half_extent_cells));
+    const int bbox_end_y = std::max(0, std::min(size_y - 1, max_my + window_half_extent_cells));
 
-    for (int y = start_y; y <= end_y; ++y) {
-      const int ny0 = std::max(0, y - window_radius_cells);
-      const int ny1 = std::min(size_y - 1, y + window_radius_cells);
+    const int bbox_w = bbox_end_x - bbox_start_x + 1;
+    const int bbox_h = bbox_end_y - bbox_start_y + 1;
+    const int half_extent = window_half_extent_cells;
 
-      for (int x = start_x; x <= end_x; ++x) {
-        const size_t center_index = getIndex(static_cast<uint>(x), static_cast<uint>(y));
-        if (center_index >= _elevation_layer_m.size()) {
+    struct DequeItem
+    {
+      int idx;
+      float value;
+    };
+
+    auto sliding_min_1d = [&](auto value_at, int n, int k, float neutral, float * out) {
+      std::deque<DequeItem> dq;
+      dq.clear();
+
+      for (int j = -k; j <= (n - 1 + k); ++j) {
+        const float v = (j < 0 || j >= n) ? neutral : value_at(j);
+        while (!dq.empty() && v <= dq.back().value) {
+          dq.pop_back();
+        }
+        dq.push_back(DequeItem{j, v});
+
+        const int window_start = j - 2 * k;
+        while (!dq.empty() && dq.front().idx < window_start) {
+          dq.pop_front();
+        }
+
+        const int out_idx = j - k;
+        if (out_idx >= 0 && out_idx < n) {
+          out[out_idx] = dq.front().value;
+        }
+      }
+    };
+
+    auto sliding_max_1d = [&](auto value_at, int n, int k, float neutral, float * out) {
+      std::deque<DequeItem> dq;
+      dq.clear();
+
+      for (int j = -k; j <= (n - 1 + k); ++j) {
+        const float v = (j < 0 || j >= n) ? neutral : value_at(j);
+        while (!dq.empty() && v >= dq.back().value) {
+          dq.pop_back();
+        }
+        dq.push_back(DequeItem{j, v});
+
+        const int window_start = j - 2 * k;
+        while (!dq.empty() && dq.front().idx < window_start) {
+          dq.pop_front();
+        }
+
+        const int out_idx = j - k;
+        if (out_idx >= 0 && out_idx < n) {
+          out[out_idx] = dq.front().value;
+        }
+      }
+    };
+
+    std::vector<float> src_val(static_cast<size_t>(bbox_w) * static_cast<size_t>(bbox_h),
+      std::numeric_limits<float>::quiet_NaN());
+    std::vector<uint8_t> src_valid(static_cast<size_t>(bbox_w) * static_cast<size_t>(bbox_h), 0U);
+
+    for (int by = 0; by < bbox_h; ++by) {
+      const int my = bbox_start_y + by;
+      for (int bx = 0; bx < bbox_w; ++bx) {
+        const int mx = bbox_start_x + bx;
+        const size_t map_index = getIndex(static_cast<uint>(mx), static_cast<uint>(my));
+        if (map_index >= _elevation_layer_m.size()) {
+          continue;
+        }
+        const float h = _elevation_layer_m[map_index];
+        const size_t local_index = static_cast<size_t>(by) * static_cast<size_t>(bbox_w) +
+          static_cast<size_t>(bx);
+        src_val[local_index] = h;
+        src_valid[local_index] = std::isfinite(h) ? 1U : 0U;
+      }
+    }
+
+    // integral image for counting finite samples in O(1)
+    std::vector<uint32_t> prefix(static_cast<size_t>(bbox_w + 1) * static_cast<size_t>(bbox_h + 1), 0U);
+    for (int y = 0; y < bbox_h; ++y) {
+      uint32_t row_sum = 0U;
+      for (int x = 0; x < bbox_w; ++x) {
+        row_sum += static_cast<uint32_t>(src_valid[static_cast<size_t>(y) * static_cast<size_t>(bbox_w) +
+          static_cast<size_t>(x)]);
+        const size_t p = static_cast<size_t>(y + 1) * static_cast<size_t>(bbox_w + 1) +
+          static_cast<size_t>(x + 1);
+        prefix[p] = prefix[p - static_cast<size_t>(bbox_w + 1)] + row_sum;
+      }
+    }
+
+    auto window_sample_count = [&](int x0, int y0, int x1, int y1) -> uint32_t {
+      // x0..x1, y0..y1 inclusive in *local bbox coordinates*
+      const int xa = std::max(0, std::min(bbox_w - 1, x0));
+      const int xb = std::max(0, std::min(bbox_w - 1, x1));
+      const int ya = std::max(0, std::min(bbox_h - 1, y0));
+      const int yb = std::max(0, std::min(bbox_h - 1, y1));
+      if (xa > xb || ya > yb) {
+        return 0U;
+      }
+
+      const size_t stride = static_cast<size_t>(bbox_w + 1);
+      const size_t A = static_cast<size_t>(ya) * stride + static_cast<size_t>(xa);
+      const size_t B = static_cast<size_t>(ya) * stride + static_cast<size_t>(xb + 1);
+      const size_t C = static_cast<size_t>(yb + 1) * stride + static_cast<size_t>(xa);
+      const size_t D = static_cast<size_t>(yb + 1) * stride + static_cast<size_t>(xb + 1);
+      return prefix[D] - prefix[B] - prefix[C] + prefix[A];
+    };
+
+    const float pos_inf = std::numeric_limits<float>::infinity();
+    const float neg_inf = -std::numeric_limits<float>::infinity();
+
+    // Horizontal pass: min/max across each row into intermediate arrays.
+    std::vector<float> row_min(static_cast<size_t>(bbox_w) * static_cast<size_t>(bbox_h), pos_inf);
+    std::vector<float> row_max(static_cast<size_t>(bbox_w) * static_cast<size_t>(bbox_h), neg_inf);
+
+    for (int y = 0; y < bbox_h; ++y) {
+      const size_t base = static_cast<size_t>(y) * static_cast<size_t>(bbox_w);
+
+      auto min_at = [&](int x) -> float {
+        const size_t idx = base + static_cast<size_t>(x);
+        return src_valid[idx] ? src_val[idx] : pos_inf;
+      };
+      auto max_at = [&](int x) -> float {
+        const size_t idx = base + static_cast<size_t>(x);
+        return src_valid[idx] ? src_val[idx] : neg_inf;
+      };
+
+      sliding_min_1d(min_at, bbox_w, half_extent, pos_inf, &row_min[base]);
+      sliding_max_1d(max_at, bbox_w, half_extent, neg_inf, &row_max[base]);
+    }
+
+    // Vertical pass: min/max across columns of the intermediate arrays.
+    std::vector<float> local_min(static_cast<size_t>(bbox_w) * static_cast<size_t>(bbox_h), pos_inf);
+    std::vector<float> local_max(static_cast<size_t>(bbox_w) * static_cast<size_t>(bbox_h), neg_inf);
+
+    std::vector<float> col_out(static_cast<size_t>(bbox_h));
+
+    for (int x = 0; x < bbox_w; ++x) {
+      sliding_min_1d(
+        [&](int y) {
+          return row_min[static_cast<size_t>(y) * static_cast<size_t>(bbox_w) + static_cast<size_t>(x)];
+        },
+        bbox_h, half_extent, pos_inf, col_out.data());
+      for (int y = 0; y < bbox_h; ++y) {
+        local_min[static_cast<size_t>(y) * static_cast<size_t>(bbox_w) + static_cast<size_t>(x)] =
+          col_out[static_cast<size_t>(y)];
+      }
+
+      sliding_max_1d(
+        [&](int y) {
+          return row_max[static_cast<size_t>(y) * static_cast<size_t>(bbox_w) + static_cast<size_t>(x)];
+        },
+        bbox_h, half_extent, neg_inf, col_out.data());
+      for (int y = 0; y < bbox_h; ++y) {
+        local_max[static_cast<size_t>(y) * static_cast<size_t>(bbox_w) + static_cast<size_t>(x)] =
+          col_out[static_cast<size_t>(y)];
+      }
+    }
+
+    for (int by = 0; by < bbox_h; ++by) {
+      const int map_y = bbox_start_y + by;
+      for (int bx = 0; bx < bbox_w; ++bx) {
+        const int map_x = bbox_start_x + bx;
+
+        const size_t map_index = getIndex(static_cast<uint>(map_x), static_cast<uint>(map_y));
+        if (map_index >= _elevation_layer_m.size()) {
           continue;
         }
 
-        const float center_h = _elevation_layer_m[center_index];
+        const float center_h = _elevation_layer_m[map_index];
         if (!std::isfinite(center_h)) {
           continue;
         }
 
-        double local_min = std::numeric_limits<double>::infinity();
-        double local_max = -std::numeric_limits<double>::infinity();
-        int sample_count = 0;
+        const int wx0_map = std::max(0, map_x - half_extent);
+        const int wx1_map = std::min(size_x - 1, map_x + half_extent);
+        const int wy0_map = std::max(0, map_y - half_extent);
+        const int wy1_map = std::min(size_y - 1, map_y + half_extent);
 
-        const int nx0 = std::max(0, x - window_radius_cells);
-        const int nx1 = std::min(size_x - 1, x + window_radius_cells);
-
-        for (int ny = ny0; ny <= ny1; ++ny) {
-          for (int nx = nx0; nx <= nx1; ++nx) {
-            const size_t n_index = getIndex(static_cast<uint>(nx), static_cast<uint>(ny));
-            if (n_index >= _elevation_layer_m.size()) {
-              continue;
-            }
-            const float h = _elevation_layer_m[n_index];
-            if (!std::isfinite(h)) {
-              continue;
-            }
-            ++sample_count;
-            local_min = std::min(local_min, static_cast<double>(h));
-            local_max = std::max(local_max, static_cast<double>(h));
-          }
-        }
-
-        const int window_cells = (nx1 - nx0 + 1) * (ny1 - ny0 + 1);
+        const int window_cells = (wx1_map - wx0_map + 1) * (wy1_map - wy0_map + 1);
         const int required_samples = (_elevation_window_min_samples <= 0.0) ? 1 :
           std::max(1, static_cast<int>(
             std::ceil(_elevation_window_min_samples * static_cast<double>(window_cells))));
 
-        if (sample_count >= required_samples &&
-          (local_max - local_min) > _elevation_lethal_threshold_m)
-        {
-          setCost(static_cast<uint>(x), static_cast<uint>(y), nav2_costmap_2d::LETHAL_OBSTACLE);
+        const int wx0 = wx0_map - bbox_start_x;
+        const int wx1 = wx1_map - bbox_start_x;
+        const int wy0 = wy0_map - bbox_start_y;
+        const int wy1 = wy1_map - bbox_start_y;
+
+        const uint32_t sample_count = window_sample_count(wx0, wy0, wx1, wy1);
+        if (static_cast<int>(sample_count) < required_samples) {
+          continue;
+        }
+
+        const size_t local_index = static_cast<size_t>(by) * static_cast<size_t>(bbox_w) +
+          static_cast<size_t>(bx);
+        const float min_h = local_min[local_index];
+        const float max_h = local_max[local_index];
+
+        if (!std::isfinite(min_h) || !std::isfinite(max_h)) {
+          continue;
+        }
+
+        // With a square window, (_elevation_lethal_threshold_m / window_size_m) is a
+        // slope-like quantity (meters of height change per meter of window size).
+        if (static_cast<double>(max_h) - static_cast<double>(min_h) > _elevation_lethal_threshold_m) {
+          setCost(static_cast<uint>(map_x), static_cast<uint>(map_y), nav2_costmap_2d::LETHAL_OBSTACLE);
         }
       }
     }
