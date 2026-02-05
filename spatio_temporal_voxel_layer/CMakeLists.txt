@@ -125,6 +125,8 @@ set(stvl_plugin_sources
 add_library(stvl_bridge SHARED
   src/measurement_buffer.cpp
   src/internal/pruning_manager.cpp
+  src/internal/sliding_window_2d.cpp
+  src/internal/elevation_lethal.cpp
 )
 
 target_link_libraries(stvl_bridge
@@ -172,6 +174,12 @@ if(BUILD_TESTING)
   if(TARGET measurement_buffer_test)
     target_link_libraries(measurement_buffer_test stvl_bridge)
     ament_target_dependencies(measurement_buffer_test ${bridge_dependencies})
+  endif()
+
+  ament_add_gtest(sliding_window_2d_test test/sliding_window_2d_test.cpp)
+  if(TARGET sliding_window_2d_test)
+    target_link_libraries(sliding_window_2d_test stvl_bridge)
+    ament_target_dependencies(sliding_window_2d_test ${bridge_dependencies})
   endif()
 endif()
 
