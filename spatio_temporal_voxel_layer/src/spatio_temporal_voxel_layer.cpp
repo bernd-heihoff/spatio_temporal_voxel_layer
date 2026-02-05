@@ -98,6 +98,15 @@ void SpatioTemporalVoxelLayer::declareLayerParameters()
   declareParameter(
     "max_elevation_above_robot_base",
     rclcpp::ParameterValue(-1.0));
+
+  // Elevation-based lethal obstacle generation (disabled by default)
+  // If enabled, marks a cell as lethal when max-min elevation within a local
+  // square window exceeds the configured threshold.
+  declareParameter("elevation_window_size", rclcpp::ParameterValue(0.0));
+  declareParameter("elevation_lethal_threshold", rclcpp::ParameterValue(0.0));
+  // Relative fraction (0..1) of window cells that must have finite elevation.
+  declareParameter("elevation_window_min_samples", rclcpp::ParameterValue(0.0));
+
   declareParameter("prune_enabled", rclcpp::ParameterValue(false));
   declareParameter("prune_padding", rclcpp::ParameterValue(0.5));
   declareParameter("prune_distance", rclcpp::ParameterValue(0.0));
@@ -150,6 +159,15 @@ void SpatioTemporalVoxelLayer::loadLayerParameters(
     _max_elevation_above_robot_base = std::numeric_limits<double>::infinity();
     _limit_elevation = false;
   }
+
+  node->get_parameter(name_ + ".elevation_window_size", _elevation_window_size_m);
+  _elevation_window_size_m = std::max(0.0, _elevation_window_size_m);
+
+  node->get_parameter(name_ + ".elevation_lethal_threshold", _elevation_lethal_threshold_m);
+  _elevation_lethal_threshold_m = std::max(0.0, _elevation_lethal_threshold_m);
+
+  node->get_parameter(name_ + ".elevation_window_min_samples", _elevation_window_min_samples);
+  _elevation_window_min_samples = std::clamp(_elevation_window_min_samples, 0.0, 1.0);
 
   node->get_parameter(name_ + ".prune_enabled", _pruning_config.enabled);
 
@@ -824,6 +842,14 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   // grabs map of occupied cells from grid and adds to costmap_
   Costmap2D::resetMaps();
 
+  const bool lethal_from_elevation_enabled =
+    (_elevation_window_size_m > 0.0) && (_elevation_lethal_threshold_m > 0.0);
+  const double half_window_m = lethal_from_elevation_enabled ? (_elevation_window_size_m * 0.5) : 0.0;
+  const int window_radius_cells = lethal_from_elevation_enabled ?
+    static_cast<int>(std::max(
+      1.0,
+      std::ceil(half_window_m / static_cast<double>(getResolution())))) : 0;
+
   double base_z = 0.0;
   bool limit_elevation = _limit_elevation && std::isfinite(_max_elevation_above_robot_base);
   double elevation_ceiling = std::numeric_limits<double>::quiet_NaN();
@@ -862,6 +888,12 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   std::vector<size_t> new_active_indices;
   auto * column_map = _voxel_grid->GetColumnElevationMap();
   auto * touched_columns = _voxel_grid->GetTouchedColumns();
+
+  int min_mx = static_cast<int>(getSizeInCellsX());
+  int min_my = static_cast<int>(getSizeInCellsY());
+  int max_mx = -1;
+  int max_my = -1;
+
   if (touched_columns) {
     new_active_indices.reserve(touched_columns->size());
     for (const auto & cell : *touched_columns) {
@@ -869,6 +901,12 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
       if (!worldToMap(cell.x, cell.y, map_x, map_y)) {
         continue;
       }
+
+      min_mx = std::min(min_mx, static_cast<int>(map_x));
+      min_my = std::min(min_my, static_cast<int>(map_y));
+      max_mx = std::max(max_mx, static_cast<int>(map_x));
+      max_my = std::max(max_my, static_cast<int>(map_y));
+
       const size_t index = getIndex(map_x, map_y);
       if (index >= _elevation_layer.size()) {
         continue;
@@ -903,6 +941,10 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
       }
 
       touch(cell.x, cell.y, min_x, min_y, max_x, max_y);
+      if (lethal_from_elevation_enabled) {
+        touch(cell.x - half_window_m, cell.y - half_window_m, min_x, min_y, max_x, max_y);
+        touch(cell.x + half_window_m, cell.y + half_window_m, min_x, min_y, max_x, max_y);
+      }
     }
   }
 
@@ -915,6 +957,12 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
     if (!worldToMap(cell->x, cell->y, map_x, map_y)) {
       continue;
     }
+
+    min_mx = std::min(min_mx, static_cast<int>(map_x));
+    min_my = std::min(min_my, static_cast<int>(map_y));
+    max_mx = std::max(max_mx, static_cast<int>(map_x));
+    max_my = std::max(max_my, static_cast<int>(map_y));
+
     const size_t index = getIndex(map_x, map_y);
     if (index < _elevation_layer.size()) {
       if (!column_map || column_map->find(*cell) == column_map->end()) {
@@ -923,6 +971,71 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
       }
     }
     touch(cell->x, cell->y, min_x, min_y, max_x, max_y);
+    if (lethal_from_elevation_enabled) {
+      touch(cell->x - half_window_m, cell->y - half_window_m, min_x, min_y, max_x, max_y);
+      touch(cell->x + half_window_m, cell->y + half_window_m, min_x, min_y, max_x, max_y);
+    }
+  }
+
+  if (lethal_from_elevation_enabled && max_mx >= 0 && max_my >= 0) {
+    const int size_x = static_cast<int>(getSizeInCellsX());
+    const int size_y = static_cast<int>(getSizeInCellsY());
+
+    const int start_x = std::max(0, std::min(size_x - 1, min_mx - window_radius_cells));
+    const int start_y = std::max(0, std::min(size_y - 1, min_my - window_radius_cells));
+    const int end_x = std::max(0, std::min(size_x - 1, max_mx + window_radius_cells));
+    const int end_y = std::max(0, std::min(size_y - 1, max_my + window_radius_cells));
+
+    for (int y = start_y; y <= end_y; ++y) {
+      const int ny0 = std::max(0, y - window_radius_cells);
+      const int ny1 = std::min(size_y - 1, y + window_radius_cells);
+
+      for (int x = start_x; x <= end_x; ++x) {
+        const size_t center_index = getIndex(static_cast<uint>(x), static_cast<uint>(y));
+        if (center_index >= _elevation_layer_m.size()) {
+          continue;
+        }
+
+        const float center_h = _elevation_layer_m[center_index];
+        if (!std::isfinite(center_h)) {
+          continue;
+        }
+
+        double local_min = std::numeric_limits<double>::infinity();
+        double local_max = -std::numeric_limits<double>::infinity();
+        int sample_count = 0;
+
+        const int nx0 = std::max(0, x - window_radius_cells);
+        const int nx1 = std::min(size_x - 1, x + window_radius_cells);
+
+        for (int ny = ny0; ny <= ny1; ++ny) {
+          for (int nx = nx0; nx <= nx1; ++nx) {
+            const size_t n_index = getIndex(static_cast<uint>(nx), static_cast<uint>(ny));
+            if (n_index >= _elevation_layer_m.size()) {
+              continue;
+            }
+            const float h = _elevation_layer_m[n_index];
+            if (!std::isfinite(h)) {
+              continue;
+            }
+            ++sample_count;
+            local_min = std::min(local_min, static_cast<double>(h));
+            local_max = std::max(local_max, static_cast<double>(h));
+          }
+        }
+
+        const int window_cells = (nx1 - nx0 + 1) * (ny1 - ny0 + 1);
+        const int required_samples = (_elevation_window_min_samples <= 0.0) ? 1 :
+          std::max(1, static_cast<int>(
+            std::ceil(_elevation_window_min_samples * static_cast<double>(window_cells))));
+
+        if (sample_count >= required_samples &&
+          (local_max - local_min) > _elevation_lethal_threshold_m)
+        {
+          setCost(static_cast<uint>(x), static_cast<uint>(y), nav2_costmap_2d::LETHAL_OBSTACLE);
+        }
+      }
+    }
   }
 }
 

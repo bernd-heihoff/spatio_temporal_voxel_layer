@@ -251,6 +251,10 @@ private:
   float _no_elevation_data_m{std::numeric_limits<float>::quiet_NaN()};
   std::vector<size_t> _active_elevation_indices;
 
+  double _elevation_window_size_m{0.0};
+  double _elevation_lethal_threshold_m{0.0};
+  double _elevation_window_min_samples{0.0};
+
   std::string _topics_string;
 
   // Dynamic parameters handler
