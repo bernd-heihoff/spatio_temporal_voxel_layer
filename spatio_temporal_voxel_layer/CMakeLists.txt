@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.5)
 project(spatio_temporal_voxel_layer)
 
+# Silence CMake dev warning about <PackageName>_ROOT variables (e.g. PCL_ROOT)
+# and make find_package() honor them when set.
+if(POLICY CMP0074)
+  cmake_policy(SET CMP0074 NEW)
+endif()
+
+# Silence CMake dev warning from ament about option() clearing normal variables
+# (BUILD_SHARED_LIBS) and make option() honor normal variables.
+if(POLICY CMP0077)
+  cmake_policy(SET CMP0077 NEW)
+endif()
+
 if(NOT WIN32)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
 endif()

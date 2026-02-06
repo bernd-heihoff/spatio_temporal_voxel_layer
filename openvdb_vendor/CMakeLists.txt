@@ -8,6 +8,8 @@ ament_vendor(${PROJECT_NAME}
   VCS_URL https://github.com/AcademySoftwareFoundation/openvdb.git
   VCS_VERSION v10.0.1
   VCS_TYPE git
+  PATCHES
+    patches/disable_findopenvdb_component_message.patch
   CMAKE_ARGS
     -DCONCURRENT_MALLOC=Tbbmalloc
     -DOPENVDB_BUILD_BINARIES=OFF

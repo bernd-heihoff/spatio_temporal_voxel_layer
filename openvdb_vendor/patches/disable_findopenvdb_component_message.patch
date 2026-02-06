@@ -1,0 +1,15 @@
+diff --git a/cmake/FindOpenVDB.cmake b/cmake/FindOpenVDB.cmake
+index 3af86be..a7ab82a 100644
+--- a/cmake/FindOpenVDB.cmake
++++ b/cmake/FindOpenVDB.cmake
+@@ -372,7 +372,9 @@ endif()
+ set(OpenVDB_LIB_COMPONENTS "")
+ 
+ foreach(COMPONENT ${OpenVDB_FIND_COMPONENTS})
+-  message("COMPONENT = " ${COMPONENT})
++  if(OpenVDB_FIND_DEBUG)
++    message(STATUS "OpenVDB component: ${COMPONENT}")
++  endif()
+   set(LIB_NAME ${COMPONENT})
+ 
+   # Add in extra component paths
