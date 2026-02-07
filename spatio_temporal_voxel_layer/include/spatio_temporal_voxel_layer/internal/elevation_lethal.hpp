@@ -21,10 +21,13 @@ struct LethalMaskGrid
 // Computes a lethal mask for an elevation grid.
 //
 // A cell is marked lethal when:
-// - the center cell elevation is finite
-// - the number of finite samples in the clipped square window meets
-//   `min_samples_fraction` (0..1)
-// - (max_elevation - min_elevation) within the window exceeds `threshold_m`
+// - the number of finite samples in the clipped square window is LESS than
+//   `min_samples_fraction` (0..1) of the window cells (conservative: treat
+//   insufficient data as lethal)
+//   OR
+// - the center cell elevation is finite AND the number of finite samples in
+//   the clipped square window meets `min_samples_fraction` AND
+//   (max_elevation - min_elevation) within the window exceeds `threshold_m`
 //
 // Inputs:
 // - `elevation` is row-major array of size (size_x * size_y).

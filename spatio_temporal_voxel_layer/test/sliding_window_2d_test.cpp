@@ -121,11 +121,6 @@ std::vector<uint8_t> bruteForceLethal(
     const int my = eval_start_y + y;
     for (int x = 0; x < w; ++x) {
       const int mx = eval_start_x + x;
-      const float center = elevation[idx2d(mx, my, size_x)];
-      if (!std::isfinite(center)) {
-        continue;
-      }
-
       const int wx0 = std::max(0, mx - half_extent);
       const int wx1 = std::min(size_x - 1, mx + half_extent);
       const int wy0 = std::max(0, my - half_extent);
@@ -153,6 +148,12 @@ std::vector<uint8_t> bruteForceLethal(
       }
 
       if (count < required) {
+        out[idx2d(x, y, w)] = 1U;
+        continue;
+      }
+
+      const float center = elevation[idx2d(mx, my, size_x)];
+      if (!std::isfinite(center)) {
         continue;
       }
 
@@ -257,7 +258,7 @@ TEST(ElevationLethal, MinSamplesFractionBoundariesEdgeClipped)
       k, threshold, /*min_samples_fraction=*/1.0);
     ASSERT_EQ(lethal.width, 1);
     ASSERT_EQ(lethal.height, 1);
-    EXPECT_EQ(lethal.lethal[0], 0U);
+    EXPECT_EQ(lethal.lethal[0], 1U);
   }
 
   // Just below 1.0 still rounds up via ceil() for 4 cells: ceil(0.999 * 4) = 4.
@@ -266,7 +267,7 @@ TEST(ElevationLethal, MinSamplesFractionBoundariesEdgeClipped)
       grid, size_x, size_y,
       0, 0, 0, 0,
       k, threshold, /*min_samples_fraction=*/0.999);
-    EXPECT_EQ(lethal.lethal[0], 0U);
+    EXPECT_EQ(lethal.lethal[0], 1U);
   }
 
   // 0.75 requires ceil(0.75 * 4) = 3 samples -> should trigger (range is 1.0).

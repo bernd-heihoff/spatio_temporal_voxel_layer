@@ -83,11 +83,6 @@ LethalMaskGrid computeElevationLethalMask(
         continue;
       }
 
-      const float center_h = elevation[map_index];
-      if (!std::isfinite(center_h)) {
-        continue;
-      }
-
       const int wx0 = std::max(0, map_x - k);
       const int wx1 = std::min(size_x - 1, map_x + k);
       const int wy0 = std::max(0, map_y - k);
@@ -100,6 +95,14 @@ LethalMaskGrid computeElevationLethalMask(
 
       const size_t i = idx2d(x, y, out.width);
       if (static_cast<int>(stats.count_vals[i]) < required_samples) {
+        // Conservative behavior: if we don't have enough elevation samples
+        // in the local window, assume the area is not traversable.
+        out.lethal[i] = 1U;
+        continue;
+      }
+
+      const float center_h = elevation[map_index];
+      if (!std::isfinite(center_h)) {
         continue;
       }
 

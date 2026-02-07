@@ -277,6 +277,7 @@ private:
   std::unique_ptr<internal::PruningManager> _pruning_manager;
   double _max_elevation_above_robot_base{std::numeric_limits<double>::infinity()};
   bool _limit_elevation{false};
+  bool _voxel_obstacles_enabled{true};
   std::vector<geometry_msgs::msg::Point> _transformed_footprint;
   std::unique_ptr<volume_grid::SpatioTemporalVoxelGrid> _voxel_grid;
   boost::recursive_mutex _voxel_grid_lock;
@@ -290,6 +291,7 @@ private:
   double _elevation_window_size_m{0.0};
   double _elevation_lethal_threshold_m{0.0};
   double _elevation_window_min_samples{0.0};
+  bool _roughness_obstacles_enabled{true};
 
   std::string _topics_string;
 

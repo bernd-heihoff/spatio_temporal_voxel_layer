@@ -106,9 +106,14 @@ void SpatioTemporalVoxelLayer::declareLayerParameters()
     "max_elevation_above_robot_base",
     rclcpp::ParameterValue(-1.0));
 
+  // Simple voxel-column -> lethal obstacle marking (enabled by default)
+  declareParameter("voxel_obstacles_enabled", rclcpp::ParameterValue(true));
+
   // Elevation-based lethal obstacle generation (disabled by default)
   // If enabled, marks a cell as lethal when max-min elevation within a local
   // square window exceeds the configured threshold.
+  // Enable switch for the elevation roughness obstacle path.
+  declareParameter("roughness_obstacles_enabled", rclcpp::ParameterValue(true));
   declareParameter("elevation_window_size", rclcpp::ParameterValue(0.0));
   declareParameter("elevation_lethal_threshold", rclcpp::ParameterValue(0.0));
   // Relative fraction (0..1) of window cells that must have finite elevation.
@@ -171,6 +176,8 @@ void SpatioTemporalVoxelLayer::loadLayerParameters(
   node->get_parameter(name_ + ".mapping_mode", _mapping_mode);
   node->get_parameter(name_ + ".map_save_duration", map_save_time);
 
+  node->get_parameter(name_ + ".voxel_obstacles_enabled", _voxel_obstacles_enabled);
+
   double max_elevation_above_robot_base = -1.0;
   node->get_parameter(
     name_ + ".max_elevation_above_robot_base",
@@ -191,6 +198,8 @@ void SpatioTemporalVoxelLayer::loadLayerParameters(
 
   node->get_parameter(name_ + ".elevation_window_min_samples", _elevation_window_min_samples);
   _elevation_window_min_samples = std::clamp(_elevation_window_min_samples, 0.0, 1.0);
+
+  node->get_parameter(name_ + ".roughness_obstacles_enabled", _roughness_obstacles_enabled);
 
   node->get_parameter(name_ + ".prune_enabled", _pruning_config.enabled);
 
@@ -1134,6 +1143,7 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   Costmap2D::resetMaps();
 
   const bool lethal_from_elevation_enabled =
+    _roughness_obstacles_enabled &&
     (_elevation_window_size_m > 0.0) && (_elevation_lethal_threshold_m > 0.0);
   const double window_size_m = lethal_from_elevation_enabled ? _elevation_window_size_m : 0.0;
   const double window_half_size_m = lethal_from_elevation_enabled ? (window_size_m * 0.5) : 0.0;
@@ -1212,6 +1222,25 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
         const auto & column = column_it->second;
         const bool passes_threshold = !(_mark_threshold > 0 &&
           static_cast<int>(column.point_count) < _mark_threshold);
+
+        bool occupied_for_costmap = false;
+        if (!column.empty() && passes_threshold) {
+          if (limit_elevation) {
+            int32_t limited_index = volume_grid::ColumnElevation::NO_DATA;
+            double limited_height = std::numeric_limits<double>::quiet_NaN();
+            if (!std::isnan(elevation_ceiling) &&
+              column.highestBelow(elevation_ceiling, limited_index, limited_height))
+            {
+              occupied_for_costmap = true;
+            }
+          } else {
+            occupied_for_costmap = true;
+          }
+        }
+
+        if (_voxel_obstacles_enabled && occupied_for_costmap) {
+          setCost(map_x, map_y, nav2_costmap_2d::LETHAL_OBSTACLE);
+        }
 
         if (!column.empty() && passes_threshold) {
           if (limit_elevation) {
@@ -1894,6 +1923,10 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
         _publish_voxels = parameter.as_bool();
       } else if (name == name_ + "." + "publish_elevation_map") {
         _publish_elevation_map = parameter.as_bool();
+      } else if (name == name_ + "." + "voxel_obstacles_enabled") {
+        _voxel_obstacles_enabled = parameter.as_bool();
+      } else if (name == name_ + "." + "roughness_obstacles_enabled") {
+        _roughness_obstacles_enabled = parameter.as_bool();
       }
     }
 
