@@ -56,6 +56,8 @@
 #include "openvdb/math/BBox.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
+#include "sensor_msgs/msg/camera_info.hpp"
+
 #include <Eigen/Geometry>
 #include "visualization_msgs/msg/marker.hpp"
 
@@ -315,6 +317,15 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   declareParameter(source + "." + "vertical_fov_angle", rclcpp::ParameterValue(0.7));
   declareParameter(source + "." + "vertical_fov_padding", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "horizontal_fov_angle", rclcpp::ParameterValue(1.04));
+
+  // CameraInfo-derived FOV (evaluated once at startup)
+  declareParameter(source + "." + "fov_from_camera_info", rclcpp::ParameterValue(false));
+  declareParameter(source + "." + "camera_info_topic", rclcpp::ParameterValue(std::string("")));
+  declareParameter(source + "." + "camera_info_required", rclcpp::ParameterValue(true));
+  declareParameter(source + "." + "camera_info_timeout", rclcpp::ParameterValue(1.0));
+  declareParameter(source + "." + "vertical_fov_padding_rad", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "horizontal_fov_padding_rad", rclcpp::ParameterValue(0.0));
+
   declareParameter(source + "." + "decay_acceleration", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "filter", rclcpp::ParameterValue(std::string("passthrough")));
   declareParameter(source + "." + "voxel_min_points", rclcpp::ParameterValue(0));
@@ -343,6 +354,14 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   node->get_parameter(name_ + "." + source + "." + "vertical_fov_angle", config.vertical_fov);
   node->get_parameter(name_ + "." + source + "." + "vertical_fov_padding", config.vertical_fov_padding);
   node->get_parameter(name_ + "." + source + "." + "horizontal_fov_angle", config.horizontal_fov);
+
+  node->get_parameter(name_ + "." + source + "." + "fov_from_camera_info", config.fov_from_camera_info);
+  node->get_parameter(name_ + "." + source + "." + "camera_info_topic", config.camera_info_topic);
+  node->get_parameter(name_ + "." + source + "." + "camera_info_required", config.camera_info_required);
+  node->get_parameter(name_ + "." + source + "." + "camera_info_timeout", config.camera_info_timeout_s);
+  node->get_parameter(name_ + "." + source + "." + "vertical_fov_padding_rad", config.vertical_fov_padding_rad);
+  node->get_parameter(name_ + "." + source + "." + "horizontal_fov_padding_rad", config.horizontal_fov_padding_rad);
+
   node->get_parameter(name_ + "." + source + "." + "decay_acceleration", config.decay_acceleration);
 
   std::string filter_str;
@@ -365,6 +384,19 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   int model_type_int = 0;
   node->get_parameter(name_ + "." + source + "." + "model_type", model_type_int);
   config.model_type = static_cast<ModelType>(model_type_int);
+
+  if (config.fov_from_camera_info) {
+    // Fail-closed for clearing: start with invalid frustum until CameraInfo-derived FOV is applied.
+    // If camera_info_required is false, the configured angles remain usable as fallback.
+    if (config.camera_info_required) {
+      config.vertical_fov = 0.0;
+      config.horizontal_fov = 0.0;
+    }
+
+    config.camera_info_timeout_s = std::max(0.0, config.camera_info_timeout_s);
+    config.vertical_fov_padding_rad = std::max(0.0, config.vertical_fov_padding_rad);
+    config.horizontal_fov_padding_rad = std::max(0.0, config.horizontal_fov_padding_rad);
+  }
 
   if (!(config.data_type == "PointCloud2" || config.data_type == "LaserScan")) {
     throw std::runtime_error("Only topics that use pointclouds or laser scans are supported.");
@@ -631,10 +663,143 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
     configureObservationSource(node, config, sub_opt, transform_tolerance);
   }
 
+  initializeCameraInfoFovs(node, source_configs);
+
   current_ = true;
   was_reset_ = false;
 
   RCLCPP_INFO(logger_, "%s initialization complete!", getName().c_str());
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::initializeCameraInfoFovs(
+  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+  const std::vector<ObservationSourceConfig> & source_configs)
+/*****************************************************************************/
+{
+  {
+    std::lock_guard<std::mutex> lock(camera_info_mutex_);
+    camera_info_dependencies_.clear();
+    camera_info_subscriptions_.clear();
+  }
+
+  if (!node || !_observation_manager) {
+    return;
+  }
+
+  auto sub_opt = rclcpp::SubscriptionOptions();
+  sub_opt.callback_group = callback_group_;
+
+  for (const auto & config : source_configs) {
+    if (!config.fov_from_camera_info) {
+      continue;
+    }
+
+    const std::string dep_name = config.name + std::string("/camera_info");
+
+    CameraInfoDependencyState dep;
+    dep.required = config.camera_info_required;
+    dep.initialized = false;
+    dep.error_msg = "waiting for CameraInfo";
+
+    if (config.model_type != ModelType::DEPTH_CAMERA) {
+      // Only depth-camera frustums use CameraInfo-derived FOV.
+      dep.initialized = true;
+      dep.error_msg.clear();
+      std::lock_guard<std::mutex> lock(camera_info_mutex_);
+      camera_info_dependencies_[dep_name] = dep;
+      continue;
+    }
+
+    if (config.camera_info_topic.empty()) {
+      dep.error_msg = "camera_info_topic is empty";
+      std::lock_guard<std::mutex> lock(camera_info_mutex_);
+      camera_info_dependencies_[dep_name] = dep;
+      continue;
+    }
+
+    // Copy just what we need into the callback.
+    const std::string source_name = config.name;
+    const std::string camera_info_topic = config.camera_info_topic;
+    const double h_pad_rad = std::max(0.0, config.horizontal_fov_padding_rad);
+    const double v_pad_rad = std::max(0.0, config.vertical_fov_padding_rad);
+
+    {
+      std::lock_guard<std::mutex> lock(camera_info_mutex_);
+      camera_info_dependencies_[dep_name] = dep;
+    }
+
+    auto sub = node->create_subscription<sensor_msgs::msg::CameraInfo>(
+      camera_info_topic,
+      rclcpp::SensorDataQoS(),
+      [this, dep_name, source_name, h_pad_rad, v_pad_rad](sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
+      {
+        if (!msg) {
+          return;
+        }
+
+        const double width = static_cast<double>(msg->width);
+        const double height = static_cast<double>(msg->height);
+        const double fx = static_cast<double>(msg->k[0]);
+        const double fy = static_cast<double>(msg->k[4]);
+
+        if (!(width > 0.0 && height > 0.0 && fx > 0.0 && fy > 0.0)) {
+          std::lock_guard<std::mutex> lock(camera_info_mutex_);
+          auto & dep = camera_info_dependencies_[dep_name];
+          dep.initialized = false;
+          dep.error_msg = "invalid CameraInfo intrinsics (need width/height/fx/fy > 0)";
+          return;
+        }
+
+        const double h_fov_raw = 2.0 * std::atan2(width, 2.0 * fx);
+        const double v_fov_raw = 2.0 * std::atan2(height, 2.0 * fy);
+
+        constexpr double kMinFovRad = 0.05;
+        constexpr double kMaxFovRad = 3.13;
+
+        const double h_fov = std::clamp(h_fov_raw - h_pad_rad, kMinFovRad, kMaxFovRad);
+        const double v_fov = std::clamp(v_fov_raw - v_pad_rad, kMinFovRad, kMaxFovRad);
+
+        if (_observation_manager) {
+          auto buf = _observation_manager->bufferBySource(source_name);
+          if (buf) {
+            buf->Lock();
+            buf->SetHorizontalFovAngle(h_fov);
+            buf->SetVerticalFovAngle(v_fov);
+            buf->Unlock();
+
+            {
+              std::lock_guard<std::mutex> lock(camera_info_mutex_);
+              auto & dep = camera_info_dependencies_[dep_name];
+              dep.initialized = true;
+              dep.error_msg.clear();
+              camera_info_subscriptions_.erase(dep_name);
+            }
+
+            RCLCPP_INFO(
+              logger_,
+              "%s %s: computed FOV from CameraInfo (h=%.3frad, v=%.3frad)",
+              getName().c_str(), source_name.c_str(), h_fov, v_fov);
+          } else {
+            std::lock_guard<std::mutex> lock(camera_info_mutex_);
+            auto & dep = camera_info_dependencies_[dep_name];
+            dep.initialized = false;
+            dep.error_msg = "failed to find measurement buffer for source";
+          }
+        }
+      },
+      sub_opt);
+
+    {
+      std::lock_guard<std::mutex> lock(camera_info_mutex_);
+      camera_info_subscriptions_[dep_name] = sub;
+    }
+
+    RCLCPP_INFO(
+      logger_,
+      "%s %s: waiting indefinitely for CameraInfo on %s",
+      getName().c_str(), config.name.c_str(), camera_info_topic.c_str());
+  }
 }
 
 /*****************************************************************************/
@@ -1445,6 +1610,43 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
         state.last_error_msg = buffer->GetLastErrorMessage();
         sources.push_back(std::move(state));
       });
+  }
+
+  // Add synthetic required sources for one-time startup dependencies (e.g. CameraInfo-derived FOV).
+  // These are considered healthy once initialized and are kept fresh by latching last_success=now.
+  std::vector<std::pair<std::string, CameraInfoDependencyState>> camera_info_deps_snapshot;
+  {
+    std::lock_guard<std::mutex> lock(camera_info_mutex_);
+    camera_info_deps_snapshot.reserve(camera_info_dependencies_.size());
+    for (const auto & kv : camera_info_dependencies_) {
+      camera_info_deps_snapshot.emplace_back(kv.first, kv.second);
+    }
+  }
+
+  for (const auto & kv : camera_info_deps_snapshot) {
+    const auto & name = kv.first;
+    const auto & dep = kv.second;
+    if (!dep.required) {
+      continue;
+    }
+
+    internal::heartbeat::SourceState s;
+    s.source_name = name;
+    s.required = true;
+    s.enabled = true;
+    s.expected_update_rate_s = 0.0;
+
+    if (dep.initialized) {
+      s.last_success = now;
+      s.last_error = rclcpp::Time(0, 0, clock_type);
+      s.last_error_msg.clear();
+    } else {
+      s.last_success = rclcpp::Time(0, 0, clock_type);
+      s.last_error = now;
+      s.last_error_msg = dep.error_msg.empty() ? std::string("not initialized") : dep.error_msg;
+    }
+
+    sources.push_back(std::move(s));
   }
 
   const auto result = internal::heartbeat::evaluateHeartbeat(now, hb_config, costmap, sources);

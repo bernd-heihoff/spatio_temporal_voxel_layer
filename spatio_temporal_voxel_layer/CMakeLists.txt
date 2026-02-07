@@ -198,6 +198,12 @@ if(BUILD_TESTING)
   if(TARGET heartbeat_evaluator_test)
     ament_target_dependencies(heartbeat_evaluator_test rclcpp)
   endif()
+
+  ament_add_gtest(camera_info_fov_test test/camera_info_fov_test.cpp)
+  if(TARGET camera_info_fov_test)
+    target_link_libraries(camera_info_fov_test stvl_plugin)
+    ament_target_dependencies(camera_info_fov_test ${plugin_dependencies})
+  endif()
 endif()
 
 install(TARGETS stvl_core stvl_bridge stvl_plugin stvl_vdb2pc

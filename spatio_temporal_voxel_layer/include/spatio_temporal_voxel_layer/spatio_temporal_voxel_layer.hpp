@@ -204,10 +204,30 @@ private:
     double vertical_fov{0.0};
     double vertical_fov_padding{0.0};
     double horizontal_fov{0.0};
+
+    // Optional: derive horizontal/vertical FOV from sensor_msgs/CameraInfo at startup.
+    bool fov_from_camera_info{false};
+    std::string camera_info_topic;
+    bool camera_info_required{true};
+    double camera_info_timeout_s{1.0};
+    double vertical_fov_padding_rad{0.0};
+    double horizontal_fov_padding_rad{0.0};
+
     double decay_acceleration{0.0};
     int voxel_min_points{0};
     buffer::Filters filter{buffer::Filters::NONE};
     ModelType model_type{ModelType::DEPTH_CAMERA};
+  };
+
+  void initializeCameraInfoFovs(
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node,
+    const std::vector<ObservationSourceConfig> & source_configs);
+
+  struct CameraInfoDependencyState
+  {
+    bool required{false};
+    bool initialized{false};
+    std::string error_msg;
   };
 
   void declareLayerParameters();
@@ -237,6 +257,10 @@ private:
 
   laser_geometry::LaserProjection _laser_projector;
   std::unique_ptr<internal::ObservationManager> _observation_manager;
+
+  mutable std::mutex camera_info_mutex_;
+  std::unordered_map<std::string, CameraInfoDependencyState> camera_info_dependencies_;
+  std::unordered_map<std::string, rclcpp::SubscriptionBase::SharedPtr> camera_info_subscriptions_;
 
   bool _publish_voxels, _publish_elevation_map, _mapping_mode, was_reset_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _voxel_pub;
