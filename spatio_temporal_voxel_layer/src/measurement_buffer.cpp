@@ -580,6 +580,8 @@ void MeasurementBuffer::PopulateObservationMetadata(
   double stamp_in_seconds) const
 /*****************************************************************************/
 {
+  observation._source_name = _source_name;
+
   observation._origin.x = global_pose.pose.position.x;
   observation._origin.y = global_pose.pose.position.y;
   observation._origin.z = global_pose.pose.position.z;

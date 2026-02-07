@@ -73,6 +73,7 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "geometry_msgs/msg/point.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 #include "spatio_temporal_voxel_layer/srv/save_grid.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -240,6 +241,7 @@ private:
   bool _publish_voxels, _publish_elevation_map, _mapping_mode, was_reset_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _voxel_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _elevation_pub;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr frustum_pub_;
   rclcpp::Service<spatio_temporal_voxel_layer::srv::SaveGrid>::SharedPtr _grid_saver;
   std::unique_ptr<rclcpp::Duration> _map_save_duration;
   rclcpp::Time _last_map_save_time;
@@ -267,6 +269,12 @@ private:
   double _elevation_window_min_samples{0.0};
 
   std::string _topics_string;
+
+  // Debug visualization
+  bool publish_frustums_{false};
+  std::string frustum_topic_{"frustums"};
+  double frustum_lifetime_s_{0.2};
+  double frustum_line_width_{0.03};
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler;

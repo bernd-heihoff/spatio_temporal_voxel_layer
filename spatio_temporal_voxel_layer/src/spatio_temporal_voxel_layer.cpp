@@ -56,6 +56,9 @@
 #include "openvdb/math/BBox.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
+#include <Eigen/Geometry>
+#include "visualization_msgs/msg/marker.hpp"
+
 namespace spatio_temporal_voxel_layer
 {
 
@@ -128,6 +131,12 @@ void SpatioTemporalVoxelLayer::declareLayerParameters()
   declareParameter("heartbeat_default_sensor_timeout", rclcpp::ParameterValue(1.0));
   declareParameter("heartbeat_min_sensor_timeout", rclcpp::ParameterValue(0.2));
   declareParameter("heartbeat_expected_update_rate_multiplier", rclcpp::ParameterValue(2.5));
+
+  // Debug visualization (disabled by default)
+  declareParameter("publish_frustums", rclcpp::ParameterValue(false));
+  declareParameter("frustum_topic", rclcpp::ParameterValue(std::string("frustums")));
+  declareParameter("frustum_lifetime", rclcpp::ParameterValue(0.2));
+  declareParameter("frustum_line_width", rclcpp::ParameterValue(0.03));
 }
 
 /*****************************************************************************/
@@ -232,12 +241,46 @@ void SpatioTemporalVoxelLayer::loadLayerParameters(
     name_ + ".heartbeat_expected_update_rate_multiplier",
     heartbeat_expected_update_rate_multiplier_);
 
+  node->get_parameter(name_ + ".publish_frustums", publish_frustums_);
+  node->get_parameter(name_ + ".frustum_topic", frustum_topic_);
+  node->get_parameter(name_ + ".frustum_lifetime", frustum_lifetime_s_);
+  node->get_parameter(name_ + ".frustum_line_width", frustum_line_width_);
+
+  frustum_lifetime_s_ = std::max(0.0, frustum_lifetime_s_);
+  frustum_line_width_ = std::max(0.001, frustum_line_width_);
+
   heartbeat_period_s_ = std::max(0.05, heartbeat_period_s_);
   heartbeat_costmap_timeout_s_ = std::max(heartbeat_period_s_, heartbeat_costmap_timeout_s_);
   heartbeat_default_sensor_timeout_s_ = std::max(heartbeat_period_s_, heartbeat_default_sensor_timeout_s_);
   heartbeat_min_sensor_timeout_s_ = std::max(0.0, heartbeat_min_sensor_timeout_s_);
   heartbeat_expected_update_rate_multiplier_ = std::max(1.0, heartbeat_expected_update_rate_multiplier_);
 }
+
+namespace
+{
+
+inline std_msgs::msg::ColorRGBA makeDebugColorFromName(const std::string & name)
+{
+  // Deterministic bright-ish color. (Not cryptographic; just for visualization.)
+  uint32_t h = 2166136261u;
+  for (const unsigned char c : name) {
+    h ^= static_cast<uint32_t>(c);
+    h *= 16777619u;
+  }
+
+  const float r = 0.35f + 0.65f * static_cast<float>((h >> 0) & 0xFF) / 255.0f;
+  const float g = 0.35f + 0.65f * static_cast<float>((h >> 8) & 0xFF) / 255.0f;
+  const float b = 0.35f + 0.65f * static_cast<float>((h >> 16) & 0xFF) / 255.0f;
+
+  std_msgs::msg::ColorRGBA c;
+  c.r = r;
+  c.g = g;
+  c.b = b;
+  c.a = 1.0f;
+  return c;
+}
+
+}  // namespace
 
 /*****************************************************************************/
 SpatioTemporalVoxelLayer::ObservationSourceConfig
@@ -524,6 +567,12 @@ void SpatioTemporalVoxelLayer::onInitialize(void)
     "voxel_grid", rclcpp::QoS(1), pub_opt);
   _elevation_pub = node->create_publisher<sensor_msgs::msg::PointCloud2>(
     "elevation_map", rclcpp::QoS(1), pub_opt);
+
+  if (publish_frustums_) {
+    const std::string topic = frustum_topic_.empty() ? std::string("frustums") : frustum_topic_;
+    frustum_pub_ = node->create_publisher<visualization_msgs::msg::MarkerArray>(
+      topic, rclcpp::QoS(1), pub_opt);
+  }
 
   if (publish_heartbeat_) {
     const auto resolve_topic = [this](const std::string & topic, const std::string & fallback) -> std::string {
@@ -1154,6 +1203,106 @@ void SpatioTemporalVoxelLayer::updateBounds(
     current = GetClearingObservations(clearing_observations) && current;
     ObservationsResetAfterReading();
     current_ = current;
+
+    if (publish_frustums_ && frustum_pub_ && node) {
+      visualization_msgs::msg::MarkerArray msg;
+      msg.markers.reserve(clearing_observations.size());
+
+      int32_t marker_id = 0;
+      for (const auto & obs : clearing_observations) {
+        if (!obs._clearing) {
+          continue;
+        }
+
+        if (obs._model_type != ModelType::DEPTH_CAMERA) {
+          continue;
+        }
+
+        const double vFOV = obs._vertical_fov_in_rad;
+        const double hFOV = obs._horizontal_fov_in_rad;
+        const double min_d = obs._min_z_in_m;
+        const double max_d = obs._max_z_in_m;
+
+        if (vFOV <= 0.0 || hFOV <= 0.0 || max_d <= 0.0 || max_d <= min_d) {
+          continue;
+        }
+
+        visualization_msgs::msg::Marker m;
+        m.header.frame_id = _global_frame;
+        m.header.stamp = node->now();
+        m.ns = obs._source_name.empty() ? std::string("stvl_frustum") : (std::string("stvl_frustum/") + obs._source_name);
+        m.id = marker_id++;
+        m.type = visualization_msgs::msg::Marker::LINE_LIST;
+        m.action = visualization_msgs::msg::Marker::ADD;
+        m.pose.position.x = obs._origin.x;
+        m.pose.position.y = obs._origin.y;
+        m.pose.position.z = obs._origin.z;
+        m.pose.orientation.x = obs._orientation.x;
+        m.pose.orientation.y = obs._orientation.y;
+        m.pose.orientation.z = obs._orientation.z;
+        m.pose.orientation.w = obs._orientation.w;
+        m.scale.x = static_cast<float>(frustum_line_width_);
+        m.color = makeDebugColorFromName(m.ns);
+        m.lifetime = rclcpp::Duration::from_seconds(frustum_lifetime_s_);
+
+        const Eigen::Vector3d Z = Eigen::Vector3d::UnitZ();
+        const Eigen::Affine3d rx1 = Eigen::Affine3d(
+          Eigen::AngleAxisd(vFOV / 2.0, Eigen::Vector3d::UnitX()));
+        const Eigen::Affine3d rx2 = Eigen::Affine3d(
+          Eigen::AngleAxisd(-vFOV / 2.0, Eigen::Vector3d::UnitX()));
+        const Eigen::Affine3d ry1 = Eigen::Affine3d(
+          Eigen::AngleAxisd(hFOV / 2.0, Eigen::Vector3d::UnitY()));
+        const Eigen::Affine3d ry2 = Eigen::Affine3d(
+          Eigen::AngleAxisd(-hFOV / 2.0, Eigen::Vector3d::UnitY()));
+
+        std::array<Eigen::Vector3d, 4> rays{
+          rx1 * ry1 * Z,
+          rx2 * ry1 * Z,
+          rx2 * ry2 * Z,
+          rx1 * ry2 * Z
+        };
+
+        std::array<Eigen::Vector3d, 8> corners;
+        for (size_t i = 0; i < rays.size(); ++i) {
+          corners[2 * i + 0] = rays[i] * min_d;
+          corners[2 * i + 1] = rays[i] * max_d;
+        }
+
+        const auto add_edge = [&m, &corners](int a, int b) {
+            geometry_msgs::msg::Point p;
+            p.x = corners[static_cast<size_t>(a)].x();
+            p.y = corners[static_cast<size_t>(a)].y();
+            p.z = corners[static_cast<size_t>(a)].z();
+            m.points.push_back(p);
+            p.x = corners[static_cast<size_t>(b)].x();
+            p.y = corners[static_cast<size_t>(b)].y();
+            p.z = corners[static_cast<size_t>(b)].z();
+            m.points.push_back(p);
+          };
+
+        // Near plane (min_d): indices 0,2,4,6
+        add_edge(0, 2);
+        add_edge(2, 4);
+        add_edge(4, 6);
+        add_edge(6, 0);
+
+        // Far plane (max_d): indices 1,3,5,7
+        add_edge(1, 3);
+        add_edge(3, 5);
+        add_edge(5, 7);
+        add_edge(7, 1);
+
+        // Connect near->far
+        add_edge(0, 1);
+        add_edge(2, 3);
+        add_edge(4, 5);
+        add_edge(6, 7);
+
+        msg.markers.push_back(std::move(m));
+      }
+
+      frustum_pub_->publish(msg);
+    }
 
     volume_grid::OccupanyCellSet cleared_cells;
 

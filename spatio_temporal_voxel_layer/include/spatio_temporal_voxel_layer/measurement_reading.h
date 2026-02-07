@@ -40,6 +40,7 @@
 #ifndef SPATIO_TEMPORAL_VOXEL_LAYER__MEASUREMENT_READING_H_
 #define SPATIO_TEMPORAL_VOXEL_LAYER__MEASUREMENT_READING_H_
 
+#include <string>
 #include <memory>
 
 #include "spatio_temporal_voxel_layer/core/types.hpp"
@@ -100,9 +101,10 @@ struct MeasurementReading
   /*****************************************************************************/
   MeasurementReading(const MeasurementReading & obs)
   /*****************************************************************************/
-    : _origin(obs._origin),
-  _orientation(obs._orientation),
-  _cloud(std::make_shared<stvl::core::PointCloud>(*(obs._cloud))),
+    : _source_name(obs._source_name),
+    _origin(obs._origin),
+    _orientation(obs._orientation),
+    _cloud(std::make_shared<stvl::core::PointCloud>(*(obs._cloud))),
     _obstacle_range_in_m(obs._obstacle_range_in_m),
     _min_z_in_m(obs._min_z_in_m),
     _max_z_in_m(obs._max_z_in_m),
@@ -117,6 +119,7 @@ struct MeasurementReading
   {
   }
 
+  std::string _source_name;
   stvl::core::Point _origin;
   stvl::core::Quaternion _orientation;
   std::shared_ptr<stvl::core::PointCloud> _cloud;
