@@ -193,11 +193,13 @@ private:
     double expected_update_rate{0.0};
     double min_obstacle_height{0.0};
     double max_obstacle_height{0.0};
+    bool filter_obstacle_height{true};
     bool height_relative_to_base{false};
     bool required_for_heartbeat{true};
     double obstacle_range{0.0};
     double min_z{0.0};
     double max_z{0.0};
+    bool use_clearing_min_max_z{true};
     double vertical_fov{0.0};
     double vertical_fov_padding{0.0};
     double horizontal_fov{0.0};

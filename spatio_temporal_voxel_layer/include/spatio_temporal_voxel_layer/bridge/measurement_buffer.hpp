@@ -90,6 +90,7 @@ struct MeasurementBufferConfig
   double expected_update_rate{0.0};
   double min_obstacle_height{0.0};
   double max_obstacle_height{0.0};
+  bool filter_obstacle_height{true};
   bool height_relative_to_base{false};
   std::string robot_base_frame;
   double obstacle_range{0.0};
@@ -99,6 +100,7 @@ struct MeasurementBufferConfig
   double tf_tolerance{0.0};
   double min_z{0.0};
   double max_z{0.0};
+  bool use_clearing_min_max_z{true};
   double vertical_fov{0.0};
   double vertical_fov_padding{0.0};
   double horizontal_fov{0.0};
@@ -154,6 +156,12 @@ public:
     return *this;
   }
 
+  MeasurementBufferBuilder & setFilterObstacleHeight(bool value)
+  {
+    config_.filter_obstacle_height = value;
+    return *this;
+  }
+
   MeasurementBufferBuilder & setHeightRelativeToBase(bool value)
   {
     config_.height_relative_to_base = value;
@@ -205,6 +213,12 @@ public:
   MeasurementBufferBuilder & setMaxZ(double value)
   {
     config_.max_z = value;
+    return *this;
+  }
+
+  MeasurementBufferBuilder & setUseClearingMinMaxZ(bool value)
+  {
+    config_.use_clearing_min_max_z = value;
     return *this;
   }
 
@@ -336,10 +350,12 @@ public:
   // params setters
   void SetMinObstacleHeight(const double & min_obstacle_height);
   void SetMaxObstacleHeight(const double & max_obstacle_height);
+  void SetFilterObstacleHeight(const bool & enabled);
   void SetHeightRelativeToBase(const bool & enabled);
   void SetRobotBaseFrame(const std::string & frame);
   void SetMinZ(const double & min_z);
   void SetMaxZ(const double & max_z);
+  void SetUseClearingMinMaxZ(const bool & enabled);
   void SetVerticalFovPadding(const double & vertical_fov_padding);
   void SetHorizontalFovAngle(const double & horizontal_fov_angle);
   void SetVerticalFovAngle(const double & vertical_fov_angle);
@@ -383,9 +399,12 @@ private:
   std::string _global_frame, _sensor_frame, _source_name, _topic_name;
   std::list<observation::MeasurementReading> _observation_list;
   double _min_obstacle_height, _max_obstacle_height, _obstacle_range, _tf_tolerance;
+  bool _filter_obstacle_height{true};
   bool _height_relative_to_base{false};
   std::string _robot_base_frame;
-  double _min_z, _max_z, _vertical_fov, _vertical_fov_padding, _horizontal_fov;
+  double _min_z, _max_z;
+  bool _use_clearing_min_max_z{true};
+  double _vertical_fov, _vertical_fov_padding, _horizontal_fov;
   double _decay_acceleration, _voxel_size;
   bool _marking, _clearing;
   Filters _filter;

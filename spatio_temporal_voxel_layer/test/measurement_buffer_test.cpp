@@ -227,6 +227,187 @@ TEST_F(MeasurementBufferFixture, HeightRelativeToBaseRejectsWhenFilterNone)
   EXPECT_TRUE(readings.empty());
 }
 
+TEST_F(MeasurementBufferFixture, ObstacleHeightFilterDropsPointWhenEnabled)
+{
+  const auto stamp = clock_->now();
+  auto camera_tf = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(camera_tf, "test_authority", true);
+
+  // Configure a height window that excludes the test point (z=0.5).
+  auto config = makeBaseBuilder()
+    .setMarking(true)
+    .setClearing(false)
+    .setFilter(buffer::Filters::PASSTHROUGH)
+    .setMinObstacleHeight(1.0)
+    .setMaxObstacleHeight(2.0)
+    .setFilterObstacleHeight(true)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  ASSERT_EQ(readings.size(), 1U);
+  ASSERT_NE(readings.front()._cloud, nullptr);
+  EXPECT_TRUE(readings.front()._cloud->points.empty());
+}
+
+TEST_F(MeasurementBufferFixture, DisablingObstacleHeightFilterIgnoresMinMaxHeight)
+{
+  const auto stamp = clock_->now();
+  auto camera_tf = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(camera_tf, "test_authority", true);
+
+  // Configure a height window that would normally reject the test point (z=0.5).
+  auto config = makeBaseBuilder()
+    .setMarking(true)
+    .setClearing(false)
+    .setFilter(buffer::Filters::PASSTHROUGH)
+    .setMinObstacleHeight(1.0)
+    .setMaxObstacleHeight(2.0)
+    .setFilterObstacleHeight(false)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  ASSERT_EQ(readings.size(), 1U);
+  ASSERT_NE(readings.front()._cloud, nullptr);
+  ASSERT_EQ(readings.front()._cloud->points.size(), 1U);
+  EXPECT_FLOAT_EQ(readings.front()._cloud->points.front().z, 0.5F);
+}
+
+TEST_F(MeasurementBufferFixture, DisablingObstacleHeightFilterAllowsHeightRelativeToBaseWithFilterNone)
+{
+  const auto stamp = clock_->now();
+  auto camera_tf = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(camera_tf, "test_authority", true);
+
+  // With filter NONE, height_relative_to_base would normally reject when height filtering is enabled.
+  // When obstacle-height filtering is disabled, this should buffer normally (and should NOT require a base tf).
+  auto config = makeBaseBuilder()
+    .setMarking(true)
+    .setClearing(false)
+    .setFilter(buffer::Filters::NONE)
+    .setHeightRelativeToBase(true)
+    .setRobotBaseFrame("base_link")
+    .setFilterObstacleHeight(false)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  ASSERT_EQ(readings.size(), 1U);
+  ASSERT_NE(readings.front()._cloud, nullptr);
+  ASSERT_EQ(readings.front()._cloud->points.size(), 1U);
+}
+
+TEST_F(MeasurementBufferFixture, ClearingMinMaxZHonoredWhenEnabled)
+{
+  const auto stamp = clock_->now();
+  auto transform = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(transform, "test_authority", true);
+
+  auto config = makeBaseBuilder()
+    .setMarking(false)
+    .setClearing(true)
+    .setMinZ(0.5)
+    .setMaxZ(0.9)
+    .setUseClearingMinMaxZ(true)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  ASSERT_EQ(readings.size(), 1U);
+  EXPECT_DOUBLE_EQ(readings.front()._min_z_in_m, 0.5);
+  EXPECT_DOUBLE_EQ(readings.front()._max_z_in_m, 0.9);
+}
+
+TEST_F(MeasurementBufferFixture, DisablingClearingMinMaxZUsesObstacleRange)
+{
+  const auto stamp = clock_->now();
+  auto transform = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(transform, "test_authority", true);
+
+  auto config = makeBaseBuilder()
+    .setMarking(false)
+    .setClearing(true)
+    .setObstacleRange(4.2)
+    .setMinZ(0.5)
+    .setMaxZ(0.9)
+    .setUseClearingMinMaxZ(false)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  ASSERT_EQ(readings.size(), 1U);
+  EXPECT_DOUBLE_EQ(readings.front()._min_z_in_m, 0.0);
+  EXPECT_DOUBLE_EQ(readings.front()._max_z_in_m, 4.2);
+}
+
+TEST_F(MeasurementBufferFixture, DisablingClearingMinMaxZFallsBackToMaxZWhenObstacleRangeNonPositive)
+{
+  const auto stamp = clock_->now();
+  auto transform = makeIdentityTransform("map", "camera_link", stamp);
+  tf_buffer_->setTransform(transform, "test_authority", true);
+
+  auto config = makeBaseBuilder()
+    .setMarking(false)
+    .setClearing(true)
+    .setObstacleRange(0.0)
+    .setMinZ(0.5)
+    .setMaxZ(0.9)
+    .setUseClearingMinMaxZ(false)
+    .build();
+  buffer::MeasurementBuffer buffer(config);
+
+  const auto cloud = makeTestCloud("camera_link", stamp);
+  buffer.Lock();
+  buffer.BufferROSCloud(cloud);
+  buffer.Unlock();
+
+  std::vector<observation::MeasurementReading> readings;
+  buffer.GetReadings(readings);
+
+  ASSERT_EQ(readings.size(), 1U);
+  EXPECT_DOUBLE_EQ(readings.front()._min_z_in_m, 0.0);
+  EXPECT_DOUBLE_EQ(readings.front()._max_z_in_m, 0.9);
+}
+
 TEST_F(MeasurementBufferFixture, ClearingOnlyBufferUpdatesSuccessAndClearsLastErrorMessage)
 {
   const auto stamp = clock_->now();

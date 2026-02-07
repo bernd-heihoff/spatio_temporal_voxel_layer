@@ -76,10 +76,12 @@ MeasurementBuffer::MeasurementBuffer(const MeasurementBufferConfig & config)
   _max_obstacle_height(config.max_obstacle_height),
   _obstacle_range(config.obstacle_range),
   _tf_tolerance(config.tf_tolerance),
+  _filter_obstacle_height(config.filter_obstacle_height),
   _height_relative_to_base(config.height_relative_to_base),
   _robot_base_frame(config.robot_base_frame),
   _min_z(config.min_z),
   _max_z(config.max_z),
+  _use_clearing_min_max_z(config.use_clearing_min_max_z),
   _vertical_fov(config.vertical_fov),
   _vertical_fov_padding(config.vertical_fov_padding),
   _horizontal_fov(config.horizontal_fov),
@@ -343,6 +345,13 @@ void MeasurementBuffer::SetMaxObstacleHeight(const double & max_obstacle_height)
 }
 
 /*****************************************************************************/
+void MeasurementBuffer::SetFilterObstacleHeight(const bool & enabled)
+/*****************************************************************************/
+{
+  _filter_obstacle_height = enabled;
+}
+
+/*****************************************************************************/
 void MeasurementBuffer::SetHeightRelativeToBase(const bool & enabled)
 /*****************************************************************************/
 {
@@ -368,6 +377,13 @@ void MeasurementBuffer::SetMaxZ(const double & max_z)
 /*****************************************************************************/
 {
   _max_z = max_z;
+}
+
+/*****************************************************************************/
+void MeasurementBuffer::SetUseClearingMinMaxZ(const bool & enabled)
+/*****************************************************************************/
+{
+  _use_clearing_min_max_z = enabled;
 }
 
 /*****************************************************************************/
@@ -472,11 +488,34 @@ void MeasurementBuffer::ApplyFilter(
   const builtin_interfaces::msg::Time & stamp) const
 /*****************************************************************************/
 {
+  const bool apply_height_filter = _filter_obstacle_height;
+
   if (_filter == Filters::NONE) {
-    if (_height_relative_to_base) {
+    if (_height_relative_to_base && apply_height_filter) {
       throw std::runtime_error(
         _source_name +
-        " height_relative_to_base is true but filter is NONE; rejecting observation (enable 'passthrough' or 'voxel').");
+        " height_relative_to_base is true but filter is NONE; rejecting observation (enable 'passthrough' or 'voxel' or disable filter_obstacle_height).");
+    }
+    return;
+  }
+
+  // If obstacle-height filtering is disabled, we intentionally ignore min/max obstacle height.
+  // - VOXEL: still downsample
+  // - PASSTHROUGH: no-op
+  if (!apply_height_filter) {
+    if (_filter == Filters::VOXEL) {
+      pcl::PCLPointCloud2::Ptr cloud_pcl(new pcl::PCLPointCloud2());
+      pcl::PCLPointCloud2::Ptr cloud_filtered(new pcl::PCLPointCloud2());
+      pcl_conversions::toPCL(cloud, *cloud_pcl);
+
+      pcl::VoxelGrid<pcl::PCLPointCloud2> sor;
+      sor.setInputCloud(cloud_pcl);
+      sor.setDownsampleAllData(false);
+      float v_s = static_cast<float>(_voxel_size);
+      sor.setLeafSize(v_s, v_s, v_s);
+      sor.setMinimumPointsNumberPerVoxel(static_cast<unsigned int>(_voxel_min_points));
+      sor.filter(*cloud_filtered);
+      pcl_conversions::fromPCL(*cloud_filtered, cloud);
     }
     return;
   }
@@ -549,8 +588,13 @@ void MeasurementBuffer::PopulateObservationMetadata(
   observation._orientation =
     stvl::core::Quaternion{orientation.x, orientation.y, orientation.z, orientation.w};
   observation._obstacle_range_in_m = _obstacle_range;
-  observation._min_z_in_m = _min_z;
-  observation._max_z_in_m = _max_z;
+  if (_use_clearing_min_max_z) {
+    observation._min_z_in_m = _min_z;
+    observation._max_z_in_m = _max_z;
+  } else {
+    observation._min_z_in_m = 0.0;
+    observation._max_z_in_m = (_obstacle_range > 0.0) ? _obstacle_range : _max_z;
+  }
   observation._vertical_fov_in_rad = _vertical_fov;
   observation._vertical_fov_padding_in_m = _vertical_fov_padding;
   observation._horizontal_fov_in_rad = _horizontal_fov;

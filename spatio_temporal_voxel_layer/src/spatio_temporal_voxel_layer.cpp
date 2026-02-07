@@ -258,6 +258,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
     rclcpp::ParameterValue(std::string("PointCloud2")));
   declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(3.0));
+  declareParameter(source + "." + "filter_obstacle_height", rclcpp::ParameterValue(true));
   declareParameter(source + "." + "height_relative_to_base", rclcpp::ParameterValue(false));
   declareParameter(source + "." + "required_for_heartbeat", rclcpp::ParameterValue(true));
   declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
@@ -267,6 +268,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
 
   declareParameter(source + "." + "min_z", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "max_z", rclcpp::ParameterValue(10.0));
+  declareParameter(source + "." + "use_clearing_min_max_z", rclcpp::ParameterValue(true));
   declareParameter(source + "." + "vertical_fov_angle", rclcpp::ParameterValue(0.7));
   declareParameter(source + "." + "vertical_fov_padding", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "horizontal_fov_angle", rclcpp::ParameterValue(1.04));
@@ -284,6 +286,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   node->get_parameter(name_ + "." + source + "." + "data_type", config.data_type);
   node->get_parameter(name_ + "." + source + "." + "min_obstacle_height", config.min_obstacle_height);
   node->get_parameter(name_ + "." + source + "." + "max_obstacle_height", config.max_obstacle_height);
+  node->get_parameter(name_ + "." + source + "." + "filter_obstacle_height", config.filter_obstacle_height);
   node->get_parameter(name_ + "." + source + "." + "height_relative_to_base", config.height_relative_to_base);
   node->get_parameter(name_ + "." + source + "." + "required_for_heartbeat", config.required_for_heartbeat);
   node->get_parameter(name_ + "." + source + "." + "inf_is_valid", config.inf_is_valid);
@@ -293,6 +296,7 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
 
   node->get_parameter(name_ + "." + source + "." + "min_z", config.min_z);
   node->get_parameter(name_ + "." + source + "." + "max_z", config.max_z);
+  node->get_parameter(name_ + "." + source + "." + "use_clearing_min_max_z", config.use_clearing_min_max_z);
   node->get_parameter(name_ + "." + source + "." + "vertical_fov_angle", config.vertical_fov);
   node->get_parameter(name_ + "." + source + "." + "vertical_fov_padding", config.vertical_fov_padding);
   node->get_parameter(name_ + "." + source + "." + "horizontal_fov_angle", config.horizontal_fov);
@@ -340,6 +344,7 @@ buffer::MeasurementBufferConfig SpatioTemporalVoxelLayer::createMeasurementBuffe
          .setExpectedUpdateRate(config.expected_update_rate)
          .setMinObstacleHeight(config.min_obstacle_height)
          .setMaxObstacleHeight(config.max_obstacle_height)
+        .setFilterObstacleHeight(config.filter_obstacle_height)
       .setHeightRelativeToBase(config.height_relative_to_base)
       .setRobotBaseFrame(_pruning_config.base_frame)
          .setObstacleRange(config.obstacle_range)
@@ -349,6 +354,7 @@ buffer::MeasurementBufferConfig SpatioTemporalVoxelLayer::createMeasurementBuffe
          .setTfTolerance(transform_tolerance)
          .setMinZ(config.min_z)
          .setMaxZ(config.max_z)
+         .setUseClearingMinMaxZ(config.use_clearing_min_max_z)
          .setVerticalFov(config.vertical_fov)
          .setVerticalFovPadding(config.vertical_fov_padding)
          .setHorizontalFov(config.horizontal_fov)
@@ -1427,7 +1433,15 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           target_buffer->Unlock();
         };
 
-        if (name == name_ + "." + source + "." + "height_relative_to_base") {
+        if (name == name_ + "." + source + "." + "filter_obstacle_height") {
+          apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
+            buf.SetFilterObstacleHeight(parameter.as_bool());
+          });
+        } else if (name == name_ + "." + source + "." + "use_clearing_min_max_z") {
+          apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
+            buf.SetUseClearingMinMaxZ(parameter.as_bool());
+          });
+        } else if (name == name_ + "." + source + "." + "height_relative_to_base") {
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
             buf.SetHeightRelativeToBase(parameter.as_bool());
           });
