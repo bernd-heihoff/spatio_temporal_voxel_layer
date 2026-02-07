@@ -311,9 +311,8 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
   declareParameter(source + "." + "obstacle_range", rclcpp::ParameterValue(2.5));
 
-  declareParameter(source + "." + "min_z", rclcpp::ParameterValue(0.0));
-  declareParameter(source + "." + "max_z", rclcpp::ParameterValue(10.0));
-  declareParameter(source + "." + "use_clearing_min_max_z", rclcpp::ParameterValue(true));
+  declareParameter(source + "." + "near_plane_dist", rclcpp::ParameterValue(0.0));
+  declareParameter(source + "." + "far_plane_dist", rclcpp::ParameterValue(10.0));
   declareParameter(source + "." + "vertical_fov_angle", rclcpp::ParameterValue(0.7));
   declareParameter(source + "." + "vertical_fov_padding", rclcpp::ParameterValue(0.0));
   declareParameter(source + "." + "horizontal_fov_angle", rclcpp::ParameterValue(1.04));
@@ -348,9 +347,8 @@ SpatioTemporalVoxelLayer::loadObservationSourceConfig(
   node->get_parameter(name_ + "." + source + "." + "clearing", config.clearing);
   node->get_parameter(name_ + "." + source + "." + "obstacle_range", config.obstacle_range);
 
-  node->get_parameter(name_ + "." + source + "." + "min_z", config.min_z);
-  node->get_parameter(name_ + "." + source + "." + "max_z", config.max_z);
-  node->get_parameter(name_ + "." + source + "." + "use_clearing_min_max_z", config.use_clearing_min_max_z);
+  node->get_parameter(name_ + "." + source + "." + "near_plane_dist", config.near_plane_dist);
+  node->get_parameter(name_ + "." + source + "." + "far_plane_dist", config.far_plane_dist);
   node->get_parameter(name_ + "." + source + "." + "vertical_fov_angle", config.vertical_fov);
   node->get_parameter(name_ + "." + source + "." + "vertical_fov_padding", config.vertical_fov_padding);
   node->get_parameter(name_ + "." + source + "." + "horizontal_fov_angle", config.horizontal_fov);
@@ -427,9 +425,8 @@ buffer::MeasurementBufferConfig SpatioTemporalVoxelLayer::createMeasurementBuffe
          .setGlobalFrame(_global_frame)
          .setSensorFrame(config.sensor_frame)
          .setTfTolerance(transform_tolerance)
-         .setMinZ(config.min_z)
-         .setMaxZ(config.max_z)
-         .setUseClearingMinMaxZ(config.use_clearing_min_max_z)
+         .setNearPlaneDist(config.near_plane_dist)
+         .setFarPlaneDist(config.far_plane_dist)
          .setVerticalFov(config.vertical_fov)
          .setVerticalFovPadding(config.vertical_fov_padding)
          .setHorizontalFov(config.horizontal_fov)
@@ -1385,8 +1382,8 @@ void SpatioTemporalVoxelLayer::updateBounds(
 
         const double vFOV = obs._vertical_fov_in_rad;
         const double hFOV = obs._horizontal_fov_in_rad;
-        const double min_d = obs._min_z_in_m;
-        const double max_d = obs._max_z_in_m;
+        const double min_d = obs._near_plane_dist_in_m;
+        const double max_d = obs._far_plane_dist_in_m;
 
         if (vFOV <= 0.0 || hFOV <= 0.0 || max_d <= 0.0 || max_d <= min_d) {
           continue;
@@ -1429,8 +1426,17 @@ void SpatioTemporalVoxelLayer::updateBounds(
 
         std::array<Eigen::Vector3d, 8> corners;
         for (size_t i = 0; i < rays.size(); ++i) {
-          corners[2 * i + 0] = rays[i] * min_d;
-          corners[2 * i + 1] = rays[i] * max_d;
+          const double z_comp = rays[i].z();
+          if (z_comp <= 1e-6) {
+            corners[2 * i + 0] = Eigen::Vector3d::Zero();
+            corners[2 * i + 1] = Eigen::Vector3d::Zero();
+            continue;
+          }
+
+          const double near_scale = min_d / z_comp;
+          const double far_scale = max_d / z_comp;
+          corners[2 * i + 0] = rays[i] * near_scale;
+          corners[2 * i + 1] = rays[i] * far_scale;
         }
 
         const auto add_edge = [&m, &corners](int a, int b) {
@@ -1746,13 +1752,13 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
             buf.SetMaxObstacleHeight(parameter.as_double());
           });
-        } else if (name == name_ + "." + source + "." + "min_z") {
+        } else if (name == name_ + "." + source + "." + "near_plane_dist") {
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
-            buf.SetMinZ(parameter.as_double());
+            buf.SetNearPlaneDist(parameter.as_double());
           });
-        } else if (name == name_ + "." + source + "." + "max_z") {
+        } else if (name == name_ + "." + source + "." + "far_plane_dist") {
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
-            buf.SetMaxZ(parameter.as_double());
+            buf.SetFarPlaneDist(parameter.as_double());
           });
         } else if (name == name_ + "." + source + "." + "vertical_fov_angle") {
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
@@ -1787,10 +1793,6 @@ SpatioTemporalVoxelLayer::dynamicParametersCallback(std::vector<rclcpp::Paramete
         if (name == name_ + "." + source + "." + "filter_obstacle_height") {
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
             buf.SetFilterObstacleHeight(parameter.as_bool());
-          });
-        } else if (name == name_ + "." + source + "." + "use_clearing_min_max_z") {
-          apply_to_buffer([&](buffer::MeasurementBuffer & buf) {
-            buf.SetUseClearingMinMaxZ(parameter.as_bool());
           });
         } else if (name == name_ + "." + source + "." + "height_relative_to_base") {
           apply_to_buffer([&](buffer::MeasurementBuffer & buf) {

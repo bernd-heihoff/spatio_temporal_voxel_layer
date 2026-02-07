@@ -37,8 +37,8 @@ global_costmap:
           topic: camera/depth/points
           marking: false
           clearing: true
-          max_z: 7.0                  # default 0, meters
-          min_z: 0.1                  # default 10, meters
+          near_plane_dist: 0.1        # default 0, meters
+          far_plane_dist: 7.0         # default 10, meters
           vertical_fov_angle: 0.8745  # default 0.7, radians
           horizontal_fov_angle: 1.048 # default 1.04, radians
           decay_acceleration: 5.0     # default 0, 1/s^2. If laser scanner MUST be 0

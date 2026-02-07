@@ -153,8 +153,8 @@ rgbd_obstacle_layer:
     marking: false
     clearing: true
     required_for_heartbeat: false # often false for clearing-only sources; set true if required for safety
-    min_z: 0.1                   #default 0, meters
-    max_z: 7.0                   #default 10, meters
+    near_plane_dist: 0.1         # default 0, meters. Depth camera: distance along camera +Z to the near plane.
+    far_plane_dist: 7.0          # default 10, meters. Depth camera: distance along camera +Z to the far plane.
     vertical_fov_angle: 0.7      #default 0.7, radians
     horizontal_fov_angle: 1.04   #default 1.04, radians
     decay_acceleration: 1.       #default 0, 1/s^2. If laser scanner MUST be 0

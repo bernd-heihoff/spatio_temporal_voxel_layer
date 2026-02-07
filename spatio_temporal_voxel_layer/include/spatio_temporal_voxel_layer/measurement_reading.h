@@ -67,15 +67,15 @@ struct MeasurementReading
   /*****************************************************************************/
   MeasurementReading(
   stvl::core::Point & origin, stvl::core::PointCloud cloud,
-    double obstacle_range, double min_z, double max_z, double vFOV,
+    double obstacle_range, double near_plane_dist, double far_plane_dist, double vFOV,
     double vFOVPadding, double hFOV, double decay_acceleration, bool marking,
     bool clearing, ModelType model_type, double stamp_in_seconds = 0.0)
   /*****************************************************************************/
     : _origin(origin),
   _cloud(std::make_shared<stvl::core::PointCloud>(cloud)),
     _obstacle_range_in_m(obstacle_range),
-    _min_z_in_m(min_z),
-    _max_z_in_m(max_z),
+    _near_plane_dist_in_m(near_plane_dist),
+    _far_plane_dist_in_m(far_plane_dist),
     _vertical_fov_in_rad(vFOV),
     _vertical_fov_padding_in_m(vFOVPadding),
     _horizontal_fov_in_rad(hFOV),
@@ -106,8 +106,8 @@ struct MeasurementReading
     _orientation(obs._orientation),
     _cloud(std::make_shared<stvl::core::PointCloud>(*(obs._cloud))),
     _obstacle_range_in_m(obs._obstacle_range_in_m),
-    _min_z_in_m(obs._min_z_in_m),
-    _max_z_in_m(obs._max_z_in_m),
+    _near_plane_dist_in_m(obs._near_plane_dist_in_m),
+    _far_plane_dist_in_m(obs._far_plane_dist_in_m),
     _vertical_fov_in_rad(obs._vertical_fov_in_rad),
     _vertical_fov_padding_in_m(obs._vertical_fov_padding_in_m),
     _horizontal_fov_in_rad(obs._horizontal_fov_in_rad),
@@ -123,7 +123,7 @@ struct MeasurementReading
   stvl::core::Point _origin;
   stvl::core::Quaternion _orientation;
   std::shared_ptr<stvl::core::PointCloud> _cloud;
-  double _obstacle_range_in_m, _min_z_in_m, _max_z_in_m;
+  double _obstacle_range_in_m, _near_plane_dist_in_m, _far_plane_dist_in_m;
   double _vertical_fov_in_rad, _vertical_fov_padding_in_m, _horizontal_fov_in_rad;
   double _marking, _clearing, _decay_acceleration;
   ModelType _model_type;

@@ -37,8 +37,8 @@ global_costmap:
           topic: /velodyne_points
           marking: false
           clearing: true
-          max_z: 8.0                  # default 0, meters
-          min_z: 1.0                  # default 10, meters
+          near_plane_dist: 1.0        # default 0, meters (lidar: treated as minimum range)
+          far_plane_dist: 8.0         # default 10, meters (lidar: treated as maximum range)
           vertical_fov_angle: 0.523   # default 0.7, radians. For 3D lidars it's the symmetric FOV about the planar axis.
           vertical_fov_padding: 0.05    # 3D Lidar only. Default 0, in meters 
           horizontal_fov_angle: 6.29  # 3D lidar scanners like the VLP16 have 360 deg horizontal FOV.

@@ -83,8 +83,8 @@ protected:
       .setGlobalFrame("map")
       .setSensorFrame("camera_link")
       .setTfTolerance(0.1)
-      .setMinZ(0.1)
-      .setMaxZ(5.0)
+      .setNearPlaneDist(0.1)
+      .setFarPlaneDist(5.0)
       .setVerticalFov(1.0)
       .setVerticalFovPadding(0.0)
       .setHorizontalFov(0.0)
@@ -322,7 +322,7 @@ TEST_F(MeasurementBufferFixture, DisablingObstacleHeightFilterAllowsHeightRelati
   ASSERT_EQ(readings.front()._cloud->points.size(), 1U);
 }
 
-TEST_F(MeasurementBufferFixture, ClearingMinMaxZHonoredWhenEnabled)
+TEST_F(MeasurementBufferFixture, ClearingNearFarPlaneDistancesAreBuffered)
 {
   const auto stamp = clock_->now();
   auto transform = makeIdentityTransform("map", "camera_link", stamp);
@@ -331,9 +331,8 @@ TEST_F(MeasurementBufferFixture, ClearingMinMaxZHonoredWhenEnabled)
   auto config = makeBaseBuilder()
     .setMarking(false)
     .setClearing(true)
-    .setMinZ(0.5)
-    .setMaxZ(0.9)
-    .setUseClearingMinMaxZ(true)
+    .setNearPlaneDist(0.5)
+    .setFarPlaneDist(0.9)
     .build();
   buffer::MeasurementBuffer buffer(config);
 
@@ -346,11 +345,11 @@ TEST_F(MeasurementBufferFixture, ClearingMinMaxZHonoredWhenEnabled)
   buffer.GetReadings(readings);
 
   ASSERT_EQ(readings.size(), 1U);
-  EXPECT_DOUBLE_EQ(readings.front()._min_z_in_m, 0.5);
-  EXPECT_DOUBLE_EQ(readings.front()._max_z_in_m, 0.9);
+  EXPECT_DOUBLE_EQ(readings.front()._near_plane_dist_in_m, 0.5);
+  EXPECT_DOUBLE_EQ(readings.front()._far_plane_dist_in_m, 0.9);
 }
 
-TEST_F(MeasurementBufferFixture, DisablingClearingMinMaxZUsesObstacleRange)
+TEST_F(MeasurementBufferFixture, ObstacleRangeDoesNotOverrideClearingPlaneDistances)
 {
   const auto stamp = clock_->now();
   auto transform = makeIdentityTransform("map", "camera_link", stamp);
@@ -360,9 +359,8 @@ TEST_F(MeasurementBufferFixture, DisablingClearingMinMaxZUsesObstacleRange)
     .setMarking(false)
     .setClearing(true)
     .setObstacleRange(4.2)
-    .setMinZ(0.5)
-    .setMaxZ(0.9)
-    .setUseClearingMinMaxZ(false)
+    .setNearPlaneDist(0.5)
+    .setFarPlaneDist(0.9)
     .build();
   buffer::MeasurementBuffer buffer(config);
 
@@ -375,37 +373,8 @@ TEST_F(MeasurementBufferFixture, DisablingClearingMinMaxZUsesObstacleRange)
   buffer.GetReadings(readings);
 
   ASSERT_EQ(readings.size(), 1U);
-  EXPECT_DOUBLE_EQ(readings.front()._min_z_in_m, 0.0);
-  EXPECT_DOUBLE_EQ(readings.front()._max_z_in_m, 4.2);
-}
-
-TEST_F(MeasurementBufferFixture, DisablingClearingMinMaxZFallsBackToMaxZWhenObstacleRangeNonPositive)
-{
-  const auto stamp = clock_->now();
-  auto transform = makeIdentityTransform("map", "camera_link", stamp);
-  tf_buffer_->setTransform(transform, "test_authority", true);
-
-  auto config = makeBaseBuilder()
-    .setMarking(false)
-    .setClearing(true)
-    .setObstacleRange(0.0)
-    .setMinZ(0.5)
-    .setMaxZ(0.9)
-    .setUseClearingMinMaxZ(false)
-    .build();
-  buffer::MeasurementBuffer buffer(config);
-
-  const auto cloud = makeTestCloud("camera_link", stamp);
-  buffer.Lock();
-  buffer.BufferROSCloud(cloud);
-  buffer.Unlock();
-
-  std::vector<observation::MeasurementReading> readings;
-  buffer.GetReadings(readings);
-
-  ASSERT_EQ(readings.size(), 1U);
-  EXPECT_DOUBLE_EQ(readings.front()._min_z_in_m, 0.0);
-  EXPECT_DOUBLE_EQ(readings.front()._max_z_in_m, 0.9);
+  EXPECT_DOUBLE_EQ(readings.front()._near_plane_dist_in_m, 0.5);
+  EXPECT_DOUBLE_EQ(readings.front()._far_plane_dist_in_m, 0.9);
 }
 
 TEST_F(MeasurementBufferFixture, ClearingOnlyBufferUpdatesSuccessAndClearsLastErrorMessage)

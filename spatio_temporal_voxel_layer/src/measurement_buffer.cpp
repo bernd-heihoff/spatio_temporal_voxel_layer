@@ -79,9 +79,8 @@ MeasurementBuffer::MeasurementBuffer(const MeasurementBufferConfig & config)
   _filter_obstacle_height(config.filter_obstacle_height),
   _height_relative_to_base(config.height_relative_to_base),
   _robot_base_frame(config.robot_base_frame),
-  _min_z(config.min_z),
-  _max_z(config.max_z),
-  _use_clearing_min_max_z(config.use_clearing_min_max_z),
+  _near_plane_dist(config.near_plane_dist),
+  _far_plane_dist(config.far_plane_dist),
   _vertical_fov(config.vertical_fov),
   _vertical_fov_padding(config.vertical_fov_padding),
   _horizontal_fov(config.horizontal_fov),
@@ -366,24 +365,17 @@ void MeasurementBuffer::SetRobotBaseFrame(const std::string & frame)
 }
 
 /*****************************************************************************/
-void MeasurementBuffer::SetMinZ(const double & min_z)
+void MeasurementBuffer::SetNearPlaneDist(const double & near_plane_dist)
 /*****************************************************************************/
 {
-  _min_z = min_z;
+  _near_plane_dist = near_plane_dist;
 }
 
 /*****************************************************************************/
-void MeasurementBuffer::SetMaxZ(const double & max_z)
+void MeasurementBuffer::SetFarPlaneDist(const double & far_plane_dist)
 /*****************************************************************************/
 {
-  _max_z = max_z;
-}
-
-/*****************************************************************************/
-void MeasurementBuffer::SetUseClearingMinMaxZ(const bool & enabled)
-/*****************************************************************************/
-{
-  _use_clearing_min_max_z = enabled;
+  _far_plane_dist = far_plane_dist;
 }
 
 /*****************************************************************************/
@@ -590,13 +582,8 @@ void MeasurementBuffer::PopulateObservationMetadata(
   observation._orientation =
     stvl::core::Quaternion{orientation.x, orientation.y, orientation.z, orientation.w};
   observation._obstacle_range_in_m = _obstacle_range;
-  if (_use_clearing_min_max_z) {
-    observation._min_z_in_m = _min_z;
-    observation._max_z_in_m = _max_z;
-  } else {
-    observation._min_z_in_m = 0.0;
-    observation._max_z_in_m = (_obstacle_range > 0.0) ? _obstacle_range : _max_z;
-  }
+  observation._near_plane_dist_in_m = _near_plane_dist;
+  observation._far_plane_dist_in_m = _far_plane_dist;
   observation._vertical_fov_in_rad = _vertical_fov;
   observation._vertical_fov_padding_in_m = _vertical_fov_padding;
   observation._horizontal_fov_in_rad = _horizontal_fov;

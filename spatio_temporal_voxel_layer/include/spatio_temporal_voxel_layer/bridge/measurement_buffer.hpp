@@ -98,9 +98,8 @@ struct MeasurementBufferConfig
   std::string global_frame;
   std::string sensor_frame;
   double tf_tolerance{0.0};
-  double min_z{0.0};
-  double max_z{0.0};
-  bool use_clearing_min_max_z{true};
+  double near_plane_dist{0.0};
+  double far_plane_dist{0.0};
   double vertical_fov{0.0};
   double vertical_fov_padding{0.0};
   double horizontal_fov{0.0};
@@ -204,21 +203,15 @@ public:
     return *this;
   }
 
-  MeasurementBufferBuilder & setMinZ(double value)
+  MeasurementBufferBuilder & setNearPlaneDist(double value)
   {
-    config_.min_z = value;
+    config_.near_plane_dist = value;
     return *this;
   }
 
-  MeasurementBufferBuilder & setMaxZ(double value)
+  MeasurementBufferBuilder & setFarPlaneDist(double value)
   {
-    config_.max_z = value;
-    return *this;
-  }
-
-  MeasurementBufferBuilder & setUseClearingMinMaxZ(bool value)
-  {
-    config_.use_clearing_min_max_z = value;
+    config_.far_plane_dist = value;
     return *this;
   }
 
@@ -353,9 +346,8 @@ public:
   void SetFilterObstacleHeight(const bool & enabled);
   void SetHeightRelativeToBase(const bool & enabled);
   void SetRobotBaseFrame(const std::string & frame);
-  void SetMinZ(const double & min_z);
-  void SetMaxZ(const double & max_z);
-  void SetUseClearingMinMaxZ(const bool & enabled);
+  void SetNearPlaneDist(const double & near_plane_dist);
+  void SetFarPlaneDist(const double & far_plane_dist);
   void SetVerticalFovPadding(const double & vertical_fov_padding);
   void SetHorizontalFovAngle(const double & horizontal_fov_angle);
   void SetVerticalFovAngle(const double & vertical_fov_angle);
@@ -402,8 +394,7 @@ private:
   bool _filter_obstacle_height{true};
   bool _height_relative_to_base{false};
   std::string _robot_base_frame;
-  double _min_z, _max_z;
-  bool _use_clearing_min_max_z{true};
+  double _near_plane_dist{0.0}, _far_plane_dist{0.0};
   double _vertical_fov, _vertical_fov_padding, _horizontal_fov;
   double _decay_acceleration, _voxel_size;
   bool _marking, _clearing;

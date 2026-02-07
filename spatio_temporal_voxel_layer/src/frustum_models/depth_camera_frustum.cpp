@@ -73,6 +73,14 @@ void DepthCameraFrustum::ComputePlaneNormals(void)
     return;
   }
 
+  // Near/far plane distances are interpreted along the camera forward axis (+Z).
+  // The frustum boundary rays are unit-length; we scale each ray so that its
+  // Z component equals the requested plane distance.
+  if (_max_d <= 0.0 || _max_d <= _min_d || _min_d < 0.0) {
+    _valid_frustum = false;
+    return;
+  }
+
   // Z vector and deflected vector capture
   std::vector<Eigen::Vector3d> deflected_vecs;
   deflected_vecs.reserve(4);
@@ -99,8 +107,17 @@ void DepthCameraFrustum::ComputePlaneNormals(void)
   pt_.reserve(2 * deflected_vecs.size());
   std::vector<Eigen::Vector3d>::iterator it;
   for (it = deflected_vecs.begin(); it != deflected_vecs.end(); ++it) {
-    pt_.push_back(*(it) * _min_d);
-    pt_.push_back(*(it) * _max_d);
+    const double z_comp = (*it).z();
+    // For reasonable FOVs, rays must point forward (+Z).
+    if (z_comp <= 1e-6) {
+      _valid_frustum = false;
+      return;
+    }
+
+    const double near_scale = _min_d / z_comp;
+    const double far_scale = _max_d / z_comp;
+    pt_.push_back(*(it) * near_scale);
+    pt_.push_back(*(it) * far_scale);
   }
 
   assert(pt_.size() == 8);
