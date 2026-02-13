@@ -1142,6 +1142,13 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
   // grabs map of occupied cells from grid and adds to costmap_
   Costmap2D::resetMaps();
 
+  // Always update the full layer each cycle.
+  touch(getOriginX(), getOriginY(), min_x, min_y, max_x, max_y);
+  touch(
+    getOriginX() + getSizeInMetersX(),
+    getOriginY() + getSizeInMetersY(),
+    min_x, min_y, max_x, max_y);
+
   const bool lethal_from_elevation_enabled =
     _roughness_obstacles_enabled &&
     (_elevation_window_size_m > 0.0) && (_elevation_lethal_threshold_m > 0.0);
@@ -1180,96 +1187,46 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
     matchSize();
   }
 
-  for (const size_t index : _active_elevation_indices) {
-    if (index < _elevation_layer.size()) {
-      _elevation_layer[index] = _no_elevation_data;
-      _elevation_layer_m[index] = _no_elevation_data_m;
-    }
-  }
+  // We recompute the 2.5D elevation projection from scratch each cycle.
+  // This avoids relying on the touched-columns bookkeeping (which is not
+  // necessarily kept up-to-date after marking observations).
+  std::fill(_elevation_layer.begin(), _elevation_layer.end(), _no_elevation_data);
+  std::fill(_elevation_layer_m.begin(), _elevation_layer_m.end(), _no_elevation_data_m);
+  _active_elevation_indices.clear();
 
-  std::vector<size_t> new_active_indices;
-  auto * column_map = _voxel_grid->GetColumnElevationMap();
-  auto * touched_columns = _voxel_grid->GetTouchedColumns();
-
-  int min_mx = static_cast<int>(getSizeInCellsX());
-  int min_my = static_cast<int>(getSizeInCellsY());
-  int max_mx = -1;
-  int max_my = -1;
-
-  if (touched_columns) {
-    new_active_indices.reserve(touched_columns->size());
-    for (const auto & cell : *touched_columns) {
-      uint map_x, map_y;
-      if (!worldToMap(cell.x, cell.y, map_x, map_y)) {
-        continue;
-      }
-
-      min_mx = std::min(min_mx, static_cast<int>(map_x));
-      min_my = std::min(min_my, static_cast<int>(map_y));
-      max_mx = std::max(max_mx, static_cast<int>(map_x));
-      max_my = std::max(max_my, static_cast<int>(map_y));
-
-      const size_t index = getIndex(map_x, map_y);
-      if (index >= _elevation_layer.size()) {
-        continue;
-      }
-
-      _elevation_layer[index] = _no_elevation_data;
-      _elevation_layer_m[index] = _no_elevation_data_m;
-
-      const auto column_it = column_map->find(cell);
-      if (column_it != column_map->end()) {
-        const auto & column = column_it->second;
-        const bool passes_threshold = !(_mark_threshold > 0 &&
-          static_cast<int>(column.point_count) < _mark_threshold);
-
-        bool occupied_for_costmap = false;
-        if (!column.empty() && passes_threshold) {
-          if (limit_elevation) {
-            int32_t limited_index = volume_grid::ColumnElevation::NO_DATA;
-            double limited_height = std::numeric_limits<double>::quiet_NaN();
-            if (!std::isnan(elevation_ceiling) &&
-              column.highestBelow(elevation_ceiling, limited_index, limited_height))
-            {
-              occupied_for_costmap = true;
-            }
-          } else {
-            occupied_for_costmap = true;
-          }
+  // Project all active voxels to a 2.5D elevation map using max(ceiling_z) per cell.
+  // A voxel contributes only if its ceiling lies below the configured robot-base-relative limit.
+  if (_voxel_grid) {
+    _voxel_grid->ForEachActiveVoxel(
+      [this, &limit_elevation, &elevation_ceiling]
+      (const openvdb::Coord & coord, const openvdb::Vec3d & world_center) {
+        const double ceiling_z = world_center.z() + (_voxel_size * 0.5);
+        if (limit_elevation && std::isfinite(elevation_ceiling) && ceiling_z > elevation_ceiling) {
+          return;
         }
 
-        if (_voxel_obstacles_enabled && occupied_for_costmap) {
+        uint map_x, map_y;
+        if (!worldToMap(world_center.x(), world_center.y(), map_x, map_y)) {
+          return;
+        }
+
+        const size_t index = getIndex(map_x, map_y);
+        if (index >= _elevation_layer.size()) {
+          return;
+        }
+
+        if (_voxel_obstacles_enabled) {
           setCost(map_x, map_y, nav2_costmap_2d::LETHAL_OBSTACLE);
         }
 
-        if (!column.empty() && passes_threshold) {
-          if (limit_elevation) {
-            int32_t limited_index = volume_grid::ColumnElevation::NO_DATA;
-            double limited_height = std::numeric_limits<double>::quiet_NaN();
-            if (!std::isnan(elevation_ceiling) &&
-              column.highestBelow(elevation_ceiling, limited_index, limited_height))
-            {
-              _elevation_layer[index] = limited_index;
-              _elevation_layer_m[index] = static_cast<float>(limited_height);
-              new_active_indices.push_back(index);
-            }
-          } else if (!std::isnan(column.elevation_m)) {
-            _elevation_layer[index] = column.elevation_index;
-            _elevation_layer_m[index] = static_cast<float>(column.elevation_m);
-            new_active_indices.push_back(index);
-          }
+        const float prev_h = _elevation_layer_m[index];
+        const float new_h = static_cast<float>(ceiling_z);
+        if (!std::isfinite(prev_h) || new_h > prev_h) {
+          _elevation_layer[index] = static_cast<int32_t>(coord.z());
+          _elevation_layer_m[index] = new_h;
         }
-      }
-
-      touch(cell.x, cell.y, min_x, min_y, max_x, max_y);
-      if (lethal_from_elevation_enabled) {
-        touch(cell.x - window_half_size_m, cell.y - window_half_size_m, min_x, min_y, max_x, max_y);
-        touch(cell.x + window_half_size_m, cell.y + window_half_size_m, min_x, min_y, max_x, max_y);
-      }
-    }
+      });
   }
-
-  _active_elevation_indices = std::move(new_active_indices);
 
   volume_grid::OccupanyCellSet::iterator cell;
   for (cell = cleared_cells.begin(); cell != cleared_cells.end(); ++cell)
@@ -1279,33 +1236,17 @@ void SpatioTemporalVoxelLayer::UpdateROSCostmap(
       continue;
     }
 
-    min_mx = std::min(min_mx, static_cast<int>(map_x));
-    min_my = std::min(min_my, static_cast<int>(map_y));
-    max_mx = std::max(max_mx, static_cast<int>(map_x));
-    max_my = std::max(max_my, static_cast<int>(map_y));
-
-    const size_t index = getIndex(map_x, map_y);
-    if (index < _elevation_layer.size()) {
-      if (!column_map || column_map->find(*cell) == column_map->end()) {
-        _elevation_layer[index] = _no_elevation_data;
-        _elevation_layer_m[index] = _no_elevation_data_m;
-      }
-    }
-    touch(cell->x, cell->y, min_x, min_y, max_x, max_y);
-    if (lethal_from_elevation_enabled) {
-      touch(cell->x - window_half_size_m, cell->y - window_half_size_m, min_x, min_y, max_x, max_y);
-      touch(cell->x + window_half_size_m, cell->y + window_half_size_m, min_x, min_y, max_x, max_y);
-    }
+    // Bounds are full-map; no per-cell bounds updates needed.
   }
 
-  if (lethal_from_elevation_enabled && max_mx >= 0 && max_my >= 0) {
+  if (lethal_from_elevation_enabled) {
     const int size_x = static_cast<int>(getSizeInCellsX());
     const int size_y = static_cast<int>(getSizeInCellsY());
 
-    const int eval_start_x = std::max(0, std::min(size_x - 1, min_mx - window_half_extent_cells));
-    const int eval_start_y = std::max(0, std::min(size_y - 1, min_my - window_half_extent_cells));
-    const int eval_end_x = std::max(0, std::min(size_x - 1, max_mx + window_half_extent_cells));
-    const int eval_end_y = std::max(0, std::min(size_y - 1, max_my + window_half_extent_cells));
+    const int eval_start_x = 0;
+    const int eval_start_y = 0;
+    const int eval_end_x = std::max(0, size_x - 1);
+    const int eval_end_y = std::max(0, size_y - 1);
 
     const auto lethal = internal::computeElevationLethalMask(
       _elevation_layer_m,

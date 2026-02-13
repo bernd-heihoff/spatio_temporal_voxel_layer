@@ -218,7 +218,13 @@ public:
   void GetElevationPointCloud(
     stvl::core::PointCloud & cloud, bool limit, double max_world_z);
   ColumnElevationMap * GetColumnElevationMap();
-  OccupanyCellSet * GetTouchedColumns();
+
+  using ActiveVoxelCallback = std::function<void(const openvdb::Coord &, const openvdb::Vec3d &)>;
+
+  // Iterate all active voxels currently stored in the OpenVDB grid.
+  // The callback receives the voxel index coordinate and its world position
+  // (cell center).
+  void ForEachActiveVoxel(const ActiveVoxelCallback & cb) const;
 
   // Clear the grid
   bool ResetGrid(void);
@@ -262,8 +268,7 @@ protected:
   bool _pub_voxels;
   std::unique_ptr<stvl::core::PointCloud> grid_points_;
   ColumnElevationMap _column_elevations;
-  OccupanyCellSet _touched_columns;
-  boost::mutex _grid_lock;
+  mutable boost::mutex _grid_lock;
 };
 
 }  // namespace volume_grid
