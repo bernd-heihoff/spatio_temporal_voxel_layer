@@ -48,6 +48,7 @@
 #include <sstream>
 
 #include <pcl_conversions/pcl_conversions.h>
+#include <iomanip>
 
 #include "spatio_temporal_voxel_layer/spatio_temporal_voxel_layer.hpp"
 #include "spatio_temporal_voxel_layer/bridge/point_cloud_conversions.hpp"
@@ -1581,6 +1582,7 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
         state.required = true;
         state.enabled = buffer->IsEnabled();
         state.expected_update_rate_s = buffer->GetExpectedUpdateRateSeconds();
+        state.last_received = buffer->GetLastReceivedTime();
         state.last_success = buffer->GetLastSuccessfulBufferTime();
         state.last_error = buffer->GetLastErrorTime();
         state.last_error_msg = buffer->GetLastErrorMessage();
@@ -1613,10 +1615,12 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
     s.expected_update_rate_s = 0.0;
 
     if (dep.initialized) {
+      s.last_received = now;
       s.last_success = now;
       s.last_error = rclcpp::Time(0, 0, clock_type);
       s.last_error_msg.clear();
     } else {
+      s.last_received = rclcpp::Time(0, 0, clock_type);
       s.last_success = rclcpp::Time(0, 0, clock_type);
       s.last_error = now;
       s.last_error_msg = dep.error_msg.empty() ? std::string("not initialized") : dep.error_msg;
@@ -1634,6 +1638,85 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
   std_msgs::msg::String status;
   status.data = result.reason;
   heartbeat_status_pub_->publish(status);
+
+  if (!result.healthy) {
+    // Emit a throttled warning with actionable per-source timing.
+    // This is particularly helpful when TF message filters drop messages silently.
+    std::ostringstream details;
+    details.setf(std::ios::fixed);
+    details << std::setprecision(3);
+
+    for (const auto & s : sources) {
+      if (!s.required) {
+        continue;
+      }
+
+      const auto timeout_s = internal::heartbeat::computeSensorTimeoutSeconds(
+        hb_config, s.expected_update_rate_s);
+      const auto timeout = rclcpp::Duration::from_seconds(timeout_s);
+
+      const bool has_success = s.last_success.nanoseconds() != 0;
+      const bool has_received = s.last_received.nanoseconds() != 0;
+
+      const auto age_success = has_success ? (now - s.last_success) : rclcpp::Duration(0, 0);
+      const auto age_received = has_received ? (now - s.last_received) : rclcpp::Duration(0, 0);
+
+      const bool is_stale = has_success && (age_success > timeout);
+      const bool has_error = s.last_error > s.last_success;
+      const bool never_success = !has_success;
+      const bool disabled = !s.enabled;
+
+      if (!(disabled || has_error || never_success || is_stale)) {
+        continue;
+      }
+
+      if (!details.str().empty()) {
+        details << "; ";
+      }
+
+      details << s.source_name;
+
+      if (disabled) {
+        details << " disabled";
+        continue;
+      }
+
+      if (has_error) {
+        details << " last error: " << s.last_error_msg;
+        continue;
+      }
+
+      if (never_success) {
+        details << " never buffered successfully";
+        if (has_received) {
+          details << " (last received " << age_received.seconds() << "s ago)";
+        }
+        continue;
+      }
+
+      if (is_stale) {
+        details << " stale (timeout " << timeout_s << "s,";
+        if (has_received) {
+          details << " last received " << age_received.seconds() << "s ago,";
+        }
+        details << " last success " << age_success.seconds() << "s ago)";
+        continue;
+      }
+    }
+
+    const std::string extra = details.str();
+    if (!extra.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *node->get_clock(), 2000,
+        "%s heartbeat unhealthy: %s (%s)",
+        getName().c_str(), result.reason.c_str(), extra.c_str());
+    } else {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *node->get_clock(), 2000,
+        "%s heartbeat unhealthy: %s",
+        getName().c_str(), result.reason.c_str());
+    }
+  }
 }
 
 /*****************************************************************************/

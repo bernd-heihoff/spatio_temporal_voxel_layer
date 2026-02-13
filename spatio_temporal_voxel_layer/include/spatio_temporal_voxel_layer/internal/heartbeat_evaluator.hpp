@@ -45,6 +45,9 @@ struct SourceState
   bool required{true};
   bool enabled{true};
   double expected_update_rate_s{0.0};
+  // Wall-time bookkeeping from the owning node's clock.
+  // Not currently used for health evaluation, but useful for diagnostics/logging.
+  rclcpp::Time last_received;
   rclcpp::Time last_success;
   rclcpp::Time last_error;
   std::string last_error_msg;
