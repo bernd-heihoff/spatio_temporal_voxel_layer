@@ -39,6 +39,7 @@
 
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <string>
 #include <unordered_map>
 #include <memory>
@@ -139,6 +140,10 @@ void SpatioTemporalVoxelLayer::declareLayerParameters()
   declareParameter("heartbeat_default_sensor_timeout", rclcpp::ParameterValue(1.0));
   declareParameter("heartbeat_min_sensor_timeout", rclcpp::ParameterValue(0.2));
   declareParameter("heartbeat_expected_update_rate_multiplier", rclcpp::ParameterValue(2.5));
+
+  // Instrumentation / diagnostics (disabled by default)
+  declareParameter("instrumentation_enabled", rclcpp::ParameterValue(false));
+  declareParameter("heartbeat_include_instrumentation", rclcpp::ParameterValue(false));
 
   // Debug visualization (disabled by default)
   declareParameter("publish_frustums", rclcpp::ParameterValue(false));
@@ -252,6 +257,9 @@ void SpatioTemporalVoxelLayer::loadLayerParameters(
   node->get_parameter(
     name_ + ".heartbeat_expected_update_rate_multiplier",
     heartbeat_expected_update_rate_multiplier_);
+
+  node->get_parameter(name_ + ".instrumentation_enabled", instrumentation_enabled_);
+  node->get_parameter(name_ + ".heartbeat_include_instrumentation", heartbeat_include_instrumentation_);
 
   node->get_parameter(name_ + ".publish_frustums", publish_frustums_);
   node->get_parameter(name_ + ".frustum_topic", frustum_topic_);
@@ -462,6 +470,13 @@ void SpatioTemporalVoxelLayer::configureObservationSource(
   double transform_tolerance)
 /*****************************************************************************/
 {
+  if (instrumentation_enabled_) {
+    std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+    if (instrumentation_.find(config.name) == instrumentation_.end()) {
+      instrumentation_[config.name] = std::make_shared<SourceInstrumentation>();
+    }
+  }
+
   auto buffer_config = createMeasurementBufferConfig(node, config, transform_tolerance);
   auto buffer = std::make_shared<buffer::MeasurementBuffer>(buffer_config);
 
@@ -476,8 +491,18 @@ void SpatioTemporalVoxelLayer::configureObservationSource(
 
   internal::ObservationManager::SubscriberPtr subscriber;
   internal::ObservationManager::NotifierPtr notifier;
+  internal::ObservationManager::SubscriberPtr raw_subscriber;
 
   if (config.data_type == "LaserScan") {
+    if (instrumentation_enabled_) {
+      auto raw_laser_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::LaserScan,
+          rclcpp_lifecycle::LifecycleNode>>(node, config.topic, custom_qos_profile, sub_opt);
+      raw_laser_sub->unsubscribe();
+      raw_laser_sub->registerCallback(
+        std::bind(&SpatioTemporalVoxelLayer::LaserScanRawCallback, this, _1, config.name));
+      raw_subscriber = raw_laser_sub;
+    }
+
     auto laser_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::LaserScan,
         rclcpp_lifecycle::LifecycleNode>>(node, config.topic, custom_qos_profile, sub_opt);
     laser_sub->unsubscribe();
@@ -501,6 +526,15 @@ void SpatioTemporalVoxelLayer::configureObservationSource(
     subscriber = laser_sub;
     notifier = laser_filter;
   } else if (config.data_type == "PointCloud2") {
+    if (instrumentation_enabled_) {
+      auto raw_cloud_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2,
+          rclcpp_lifecycle::LifecycleNode>>(node, config.topic, custom_qos_profile, sub_opt);
+      raw_cloud_sub->unsubscribe();
+      raw_cloud_sub->registerCallback(
+        std::bind(&SpatioTemporalVoxelLayer::PointCloud2RawCallback, this, _1, config.name));
+      raw_subscriber = raw_cloud_sub;
+    }
+
     auto cloud_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2,
         rclcpp_lifecycle::LifecycleNode>>(node, config.topic, custom_qos_profile, sub_opt);
     cloud_sub->unsubscribe();
@@ -518,6 +552,10 @@ void SpatioTemporalVoxelLayer::configureObservationSource(
   }
 
   finalizeObservationSource(node, config, buffer, subscriber, notifier);
+
+  if (_observation_manager && raw_subscriber) {
+    _observation_manager->addSubscriber(raw_subscriber);
+  }
 }
 
 /*****************************************************************************/
@@ -818,6 +856,25 @@ void SpatioTemporalVoxelLayer::LaserScanCallback(
   if (!buffer->IsEnabled()) {
     return;
   }
+
+  std::shared_ptr<SourceInstrumentation> inst;
+  if (instrumentation_enabled_ && message) {
+    std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+    const auto it = instrumentation_.find(buffer->GetSourceName());
+    if (it != instrumentation_.end()) {
+      inst = it->second;
+    }
+  }
+
+  auto node = node_.lock();
+  if (inst && node) {
+    inst->filtered_cb_count.fetch_add(1, std::memory_order_relaxed);
+    inst->filtered_last_wall_time_ns.store(node->now().nanoseconds(), std::memory_order_relaxed);
+    inst->filtered_last_stamp_ns.store(rclcpp::Time(message->header.stamp).nanoseconds(), std::memory_order_relaxed);
+  }
+
+  const auto t0 = std::chrono::steady_clock::now();
+
   // laser scan where infinity is invalid callback function
   sensor_msgs::msg::PointCloud2 cloud;
   cloud.header = message->header;
@@ -835,6 +892,15 @@ void SpatioTemporalVoxelLayer::LaserScanCallback(
   buffer->Lock();
   buffer->BufferROSCloud(cloud);
   buffer->Unlock();
+
+  if (inst) {
+    const auto dt_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+    inst->filtered_last_cb_duration_ns.store(dt_ns, std::memory_order_relaxed);
+    int64_t prev = inst->filtered_max_cb_duration_ns.load(std::memory_order_relaxed);
+    while (dt_ns > prev &&
+      !inst->filtered_max_cb_duration_ns.compare_exchange_weak(prev, dt_ns, std::memory_order_relaxed)) {}
+  }
 }
 
 /*****************************************************************************/
@@ -846,6 +912,25 @@ void SpatioTemporalVoxelLayer::LaserScanValidInfCallback(
   if (!buffer->IsEnabled()) {
     return;
   }
+
+  std::shared_ptr<SourceInstrumentation> inst;
+  if (instrumentation_enabled_ && raw_message) {
+    std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+    const auto it = instrumentation_.find(buffer->GetSourceName());
+    if (it != instrumentation_.end()) {
+      inst = it->second;
+    }
+  }
+
+  auto node = node_.lock();
+  if (inst && node) {
+    inst->filtered_cb_count.fetch_add(1, std::memory_order_relaxed);
+    inst->filtered_last_wall_time_ns.store(node->now().nanoseconds(), std::memory_order_relaxed);
+    inst->filtered_last_stamp_ns.store(rclcpp::Time(raw_message->header.stamp).nanoseconds(), std::memory_order_relaxed);
+  }
+
+  const auto t0 = std::chrono::steady_clock::now();
+
   // Filter infinity to max_range
   float epsilon = 0.0001;
   sensor_msgs::msg::LaserScan message = *raw_message;
@@ -871,6 +956,15 @@ void SpatioTemporalVoxelLayer::LaserScanValidInfCallback(
   buffer->Lock();
   buffer->BufferROSCloud(cloud);
   buffer->Unlock();
+
+  if (inst) {
+    const auto dt_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+    inst->filtered_last_cb_duration_ns.store(dt_ns, std::memory_order_relaxed);
+    int64_t prev = inst->filtered_max_cb_duration_ns.load(std::memory_order_relaxed);
+    while (dt_ns > prev &&
+      !inst->filtered_max_cb_duration_ns.compare_exchange_weak(prev, dt_ns, std::memory_order_relaxed)) {}
+  }
 }
 
 /*****************************************************************************/
@@ -882,10 +976,104 @@ void SpatioTemporalVoxelLayer::PointCloud2Callback(
   if (!buffer->IsEnabled()) {
     return;
   }
+
+  std::shared_ptr<SourceInstrumentation> inst;
+  if (instrumentation_enabled_ && message) {
+    std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+    const auto it = instrumentation_.find(buffer->GetSourceName());
+    if (it != instrumentation_.end()) {
+      inst = it->second;
+    }
+  }
+
+  auto node = node_.lock();
+  if (inst && node) {
+    inst->filtered_cb_count.fetch_add(1, std::memory_order_relaxed);
+    inst->filtered_last_wall_time_ns.store(node->now().nanoseconds(), std::memory_order_relaxed);
+    inst->filtered_last_stamp_ns.store(rclcpp::Time(message->header.stamp).nanoseconds(), std::memory_order_relaxed);
+  }
+
+  const auto t0 = std::chrono::steady_clock::now();
+
   // buffer the point cloud
   buffer->Lock();
   buffer->BufferROSCloud(*message);
   buffer->Unlock();
+
+  if (inst) {
+    const auto dt_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+    inst->filtered_last_cb_duration_ns.store(dt_ns, std::memory_order_relaxed);
+    int64_t prev = inst->filtered_max_cb_duration_ns.load(std::memory_order_relaxed);
+    while (dt_ns > prev &&
+      !inst->filtered_max_cb_duration_ns.compare_exchange_weak(prev, dt_ns, std::memory_order_relaxed)) {}
+  }
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::LaserScanRawCallback(
+  sensor_msgs::msg::LaserScan::ConstSharedPtr message,
+  const std::string & source_name)
+/*****************************************************************************/
+{
+  if (!instrumentation_enabled_ || !message) {
+    return;
+  }
+
+  auto node = node_.lock();
+  if (!node) {
+    return;
+  }
+
+  std::shared_ptr<SourceInstrumentation> inst;
+  {
+    std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+    const auto it = instrumentation_.find(source_name);
+    if (it != instrumentation_.end()) {
+      inst = it->second;
+    }
+  }
+
+  if (!inst) {
+    return;
+  }
+
+  inst->raw_msg_count.fetch_add(1, std::memory_order_relaxed);
+  inst->raw_last_wall_time_ns.store(node->now().nanoseconds(), std::memory_order_relaxed);
+  inst->raw_last_stamp_ns.store(rclcpp::Time(message->header.stamp).nanoseconds(), std::memory_order_relaxed);
+}
+
+/*****************************************************************************/
+void SpatioTemporalVoxelLayer::PointCloud2RawCallback(
+  sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
+  const std::string & source_name)
+/*****************************************************************************/
+{
+  if (!instrumentation_enabled_ || !message) {
+    return;
+  }
+
+  auto node = node_.lock();
+  if (!node) {
+    return;
+  }
+
+  std::shared_ptr<SourceInstrumentation> inst;
+  {
+    std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+    const auto it = instrumentation_.find(source_name);
+    if (it != instrumentation_.end()) {
+      inst = it->second;
+    }
+  }
+
+  if (!inst) {
+    return;
+  }
+
+  inst->raw_msg_count.fetch_add(1, std::memory_order_relaxed);
+  inst->raw_last_wall_time_ns.store(node->now().nanoseconds(), std::memory_order_relaxed);
+  inst->raw_last_stamp_ns.store(rclcpp::Time(message->header.stamp).nanoseconds(), std::memory_order_relaxed);
 }
 
 /*****************************************************************************/
@@ -1646,6 +1834,68 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
     details.setf(std::ios::fixed);
     details << std::setprecision(3);
 
+    const auto append_instrumentation =
+      [this, &details, &now, clock_type](const std::string & source_name) {
+        if (!heartbeat_include_instrumentation_ || !instrumentation_enabled_) {
+          return;
+        }
+
+        std::shared_ptr<SourceInstrumentation> inst;
+        {
+          std::lock_guard<std::mutex> lock(instrumentation_mutex_);
+          const auto it = instrumentation_.find(source_name);
+          if (it != instrumentation_.end()) {
+            inst = it->second;
+          }
+        }
+
+        if (!inst) {
+          return;
+        }
+
+        const auto raw_count = inst->raw_msg_count.load(std::memory_order_relaxed);
+        const auto raw_wall_ns = inst->raw_last_wall_time_ns.load(std::memory_order_relaxed);
+        const auto raw_stamp_ns = inst->raw_last_stamp_ns.load(std::memory_order_relaxed);
+
+        const auto cb_count = inst->filtered_cb_count.load(std::memory_order_relaxed);
+        const auto cb_wall_ns = inst->filtered_last_wall_time_ns.load(std::memory_order_relaxed);
+        const auto cb_stamp_ns = inst->filtered_last_stamp_ns.load(std::memory_order_relaxed);
+
+        const auto last_cb_ns = inst->filtered_last_cb_duration_ns.load(std::memory_order_relaxed);
+        const auto max_cb_ns = inst->filtered_max_cb_duration_ns.load(std::memory_order_relaxed);
+
+        details << " [inst raw=";
+        if (raw_wall_ns != 0) {
+          details << (now - rclcpp::Time(raw_wall_ns, clock_type)).seconds() << "s";
+        } else {
+          details << "never";
+        }
+        details << "(" << raw_count << ")";
+
+        // Include stamp skew to catch future/old timestamps that can block TF.
+        if (raw_stamp_ns != 0) {
+          details << ", raw_stamp_skew="
+                  << (now - rclcpp::Time(raw_stamp_ns, clock_type)).seconds() << "s";
+        }
+
+        details << ", cb=";
+        if (cb_wall_ns != 0) {
+          details << (now - rclcpp::Time(cb_wall_ns, clock_type)).seconds() << "s";
+        } else {
+          details << "never";
+        }
+        details << "(" << cb_count << ")";
+
+        if (cb_stamp_ns != 0) {
+          details << ", cb_stamp_skew="
+                  << (now - rclcpp::Time(cb_stamp_ns, clock_type)).seconds() << "s";
+        }
+
+        details << ", cb_dur=" << (static_cast<double>(last_cb_ns) / 1e6) << "ms";
+        details << ", cb_max=" << (static_cast<double>(max_cb_ns) / 1e6) << "ms";
+        details << "]";
+      };
+
     for (const auto & s : sources) {
       if (!s.required) {
         continue;
@@ -1678,11 +1928,13 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
 
       if (disabled) {
         details << " disabled";
+        append_instrumentation(s.source_name);
         continue;
       }
 
       if (has_error) {
         details << " last error: " << s.last_error_msg;
+        append_instrumentation(s.source_name);
         continue;
       }
 
@@ -1691,6 +1943,7 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
         if (has_received) {
           details << " (last received " << age_received.seconds() << "s ago)";
         }
+        append_instrumentation(s.source_name);
         continue;
       }
 
@@ -1700,6 +1953,7 @@ void SpatioTemporalVoxelLayer::heartbeatTimerCallback()
           details << " last received " << age_received.seconds() << "s ago,";
         }
         details << " last success " << age_success.seconds() << "s ago)";
+        append_instrumentation(s.source_name);
         continue;
       }
     }

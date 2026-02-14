@@ -155,6 +155,15 @@ private:
     sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
     const std::shared_ptr<buffer::MeasurementBuffer> & buffer);
 
+  // Raw sensor callbacks (no TF filtering). Used for instrumentation to
+  // distinguish upstream stalls from TF MessageFilter gating or executor starvation.
+  void LaserScanRawCallback(
+    sensor_msgs::msg::LaserScan::ConstSharedPtr message,
+    const std::string & source_name);
+  void PointCloud2RawCallback(
+    sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
+    const std::string & source_name);
+
   void heartbeatTimerCallback();
 
   bool getRobotBaseHeight(double & base_z);
@@ -314,6 +323,29 @@ private:
   double heartbeat_min_sensor_timeout_s_{0.2};
   double heartbeat_expected_update_rate_multiplier_{2.5};
   std::unordered_map<std::string, bool> heartbeat_required_sources_{};
+
+  // Instrumentation (disabled by default): helps diagnose TF MessageFilter gating
+  // vs upstream sensor stalls vs callback starvation.
+  bool instrumentation_enabled_{false};
+  bool heartbeat_include_instrumentation_{false};
+
+  struct SourceInstrumentation
+  {
+    std::atomic<uint64_t> raw_msg_count{0};
+    std::atomic<int64_t> raw_last_wall_time_ns{0};
+    std::atomic<int64_t> raw_last_stamp_ns{0};
+
+    std::atomic<uint64_t> filtered_cb_count{0};
+    std::atomic<int64_t> filtered_last_wall_time_ns{0};
+    std::atomic<int64_t> filtered_last_stamp_ns{0};
+
+    // Time spent inside the filtered callback (includes BufferROSCloud work).
+    std::atomic<int64_t> filtered_last_cb_duration_ns{0};
+    std::atomic<int64_t> filtered_max_cb_duration_ns{0};
+  };
+
+  mutable std::mutex instrumentation_mutex_;
+  std::unordered_map<std::string, std::shared_ptr<SourceInstrumentation>> instrumentation_;
 
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr heartbeat_pub_;
